@@ -26,6 +26,24 @@ from megatron.training.datasets.sft_dataset import SFTDataset
 from model_provider import model_provider
 from gpt_builders import gpt_builder
 
+from megatron.core.datasets.gpt_dataset import _get_ltor_masks_and_position_ids
+
+from typing import Any, Optional
+import os
+
+
+from mixtera.torch import MixteraTorchDataset
+from mixtera.core.client import MixteraClient, QueryExecutionArgs, ResultStreamingArgs
+from mixtera.core.query import Query
+from mixtera.core.query.mixture import InferringMixture, StaticMixture, MixtureKey
+from mixtera.core.query.mixture.dynamic_mixture import DynamicMixture
+from mixtera.core.algo.ado.ado import AdoDynamicMixing
+from mixtera.utils.feedback import handle_mixtera_feedback
+from mixtera.utils.checkpoint import handle_mixtera_checkpoint
+
+from time import time
+from pathlib import Path
+
 try:
     from megatron.post_training.arguments import add_modelopt_args, modelopt_args_enabled
     from megatron.post_training.loss_func import loss_func as loss_func_modelopt
@@ -41,6 +59,7 @@ def get_batch(data_iterator, vp_stage=None):
     """Generate a batch."""
     # TODO: this is pretty hacky, find a better way
     if not is_first_or_last_pipeline_stage(vp_stage):
+        next(data_iterator)
         return None, None, None, None, None
 
     # get batches based on the TP rank you are on
@@ -48,6 +67,10 @@ def get_batch(data_iterator, vp_stage=None):
 
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)
+    
+    print(f"Rank {torch.distributed.get_rank()}, tokens {batch['tokens']}", flush=True)
+    if torch.distributed.get_rank() == 0:
+        print("*****************************************")
 
     return batch.values()
 
@@ -200,6 +223,9 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
         train_val_test_num_samples : A list containing the number of samples in train test and validation.
     """
     args = get_args()
+    
+    if args.dataloader_type == 'mixtera':
+        return mixtera_provider(train_val_test_num_samples, vp_stage)
 
     config = core_gpt_dataset_config_from_args(args)
 
@@ -221,6 +247,195 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
 
     return train_ds, valid_ds, test_ds
 
+from mixtera.core.datacollection.index.parser import MetadataParser
+from mixtera.core.datacollection.index.parser.metadata_parser import MetadataProperty
+from mixtera.core.client.mixtera_client import QueryExecutionArgs, ResultStreamingArgs
+from mixtera.core.datacollection.datasets import JSONLDataset
+from mixtera.core.datacollection.index.parser import MetadataParser
+from mixtera.core.datacollection.index.parser.metadata_parser import MetadataProperty
+from mixtera.core.query import Query
+from mixtera.core.query.mixture import ArbitraryMixture, Mixture
+from mixtera.torch import MixteraTorchDataset
+
+class TestMetadataParser(MetadataParser):
+    @classmethod
+    def get_properties(cls) -> list[MetadataProperty]:
+        return [
+            MetadataProperty(
+                name="language",
+                dtype="ENUM",
+                multiple=False,
+                nullable=False,
+                enum_options={"JavaScript", "HTML"},
+            ),
+            MetadataProperty(
+                name="license",
+                dtype="STRING",
+                multiple=False,
+                nullable=False,
+                enum_options={"CC", "MIT"},
+            ),  # Could be ENUM but we are using string to test
+            MetadataProperty(
+                name="doublelanguage",
+                dtype="ENUM",
+                multiple=True,
+                nullable=False,
+                enum_options={"JavaScript", "HTML"},
+            ),
+        ]
+
+    def parse(
+        self, line_number: int, payload: Any, **kwargs: Optional[dict[Any, Any]]
+    ) -> None:
+        metadata = payload["meta"]
+        self.add_metadata(
+            sample_id=line_number,
+            language=metadata["language"],
+            license=metadata["license"],
+            doublelanguage=[metadata["language"], metadata["language"]],
+        )
+
+def parsing_func(sample):
+    import json
+
+    return json.loads(sample)["text"]
+
+
+class MixteraWrapper(torch.utils.data.IterableDataset):
+    def __init__(self, torch_ds: MixteraTorchDataset, return_key_id: bool):
+        self.torch_ds = torch_ds
+        self.return_key_id = return_key_id
+        
+        from transformers import AutoTokenizer
+        _tokenizer = AutoTokenizer.from_pretrained(self.torch_ds._res_str_args.chunk_reading_tokenizer, use_fast=True)
+        self.eos = _tokenizer.eos_token_id
+
+    def __iter__(self):
+        for item in self.torch_ds:
+            assert (self.return_key_id and isinstance(item, tuple) and len(item) == 2) or (not isinstance(item, tuple)), f"Inconsistent state:\n self.return_key_id = {self.return_key_id}\n item = {item}\n type(item)={type(item)}"
+
+            if self.return_key_id:
+                key_id = item[0]
+                sample = item[1]
+            else:
+                sample = item
+                key_id = None
+            
+            del item
+            assert isinstance(key_id, int) or (key_id is None and not self.return_key_id), f"key id = {key_id} sample = {sample} item = {item} return_key_id = {self.return_key_id}"
+            assert isinstance(sample, list), f"Sample type is {type(sample)}"
+            assert isinstance(sample[0], int)
+
+            x = torch.LongTensor(sample)
+            input = x[:-1]
+            label = x[1:]
+            seq_len = len(input)
+
+            attention_mask, loss_mask, position_ids = _get_ltor_masks_and_position_ids(
+                input,
+                self.eos,
+                reset_attention_mask=False,
+                reset_position_ids=False,
+                eod_mask_loss=False,
+                create_attention_mask=True,
+            )
+            if not self.return_key_id:
+                yield {"tokens": input, "labels": label, "attention_mask":attention_mask, "loss_mask": loss_mask, "position_ids": position_ids}
+            else:
+                key_ids = torch.full((seq_len,), key_id, dtype=torch.long) if self.return_key_id else None
+                yield {"tokens": input}, label, key_ids
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if "torch_ds" in state: # Not pickable, and is pickled on checkpoint.
+            del state["torch_ds"]
+        return state
+    
+
+def mixtera_provider(train_val_test_num_samples, vp_stage=None):
+    args = get_args()
+    
+    server_host = "172.28.46.204"
+    server_port = 8088
+    client = MixteraClient.from_remote(server_host, server_port)
+    # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
+    # 
+    # if not client.register_dataset(
+    #         "server_integrationtest_dataset_megatron_1",
+    #         Path("/iopsstor/scratch/cscs/yiswang/tmp") / "testd.jsonl",
+    #         JSONLDataset,
+    #         parsing_func,
+    #         "TEST_PARSER",
+    #     ):
+    #     print("Dataset already registered.")
+        
+    if not client.register_dataset(
+            "slimpajama_chunk1_2",
+            Path("/iopsstor/scratch/cscs/yiswang/data/mixtera"),
+            JSONLDataset,
+            parsing_func,
+            "SLIM_PAJAMA",
+        ):
+        print("already registered dataset")
+    
+    mixture = InferringMixture(chunk_size=42)
+    num_workers = args.num_workers
+    job_id = "Megatron-mixtera" + "22"
+    query = Query.for_job(job_id).select(("redpajama_set_name", "==", "RedPajamaCommonCrawl"))
+    
+    world_size: int = torch.distributed.get_world_size()
+    nodes_per_dp_group = world_size // parallel_state.get_data_parallel_world_size()
+    # dp_group_id = parallel_state.get_data_parallel_rank() # rank in its dp group or its dp group id ?
+    dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+    dp_degree = parallel_state.get_data_parallel_world_size()
+    node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank()) # Is this global rank?
+    print(f"world_size: {world_size}, nodes_per_dp_group: {nodes_per_dp_group}, dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}")
+    torch.distributed.barrier()
+
+    
+    qea = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
+    rsa = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
+                             chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
+                             chunk_reading_mixture_type="token", 
+                             chunk_reading_sequence_len=4096,
+                             chunk_reading_eos=True)
+    # using eos, require extra process with built-in method: _get_ltor_masks_and_position_ids
+    # bos and eos token id: 50256
+    load_path = Path(args.load)
+    if not os.path.exists(load_path / "mixtera.id"):
+        load_path = None
+        
+    mixtera_ds = MixteraTorchDataset(client, query, qea, rsa, checkpoint_path=load_path)
+    
+    train_ds = MixteraWrapper(mixtera_ds, return_key_id=False)    
+    
+    valid_ds = None
+    test_ds = None
+    
+    valid_jobid = job_id + "_valid"
+    valid_rand = torch.randint(1, 1000, (1,)).cuda()
+    torch.distributed.broadcast(valid_rand, src=0)
+    valid_jobid += str(valid_rand.item())
+    rsa_valid = ResultStreamingArgs(job_id=valid_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
+                             chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
+                             chunk_reading_mixture_type="token", 
+                             chunk_reading_sequence_len=4096,
+                             chunk_reading_eos=True)
+    query_valid = Query.for_job(valid_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
+    valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid), return_key_id=False)  
+    
+    # test_jobid = job_id + "_test"
+    # rsa_test = ResultStreamingArgs(job_id=test_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
+    #                          chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
+    #                          chunk_reading_mixture_type="token", 
+    #                          chunk_reading_sequence_len=4096,
+    #                          chunk_reading_eos=True)
+    # query_test = Query.for_job(test_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
+    # test_ds = MixteraWrapper(MixteraTorchDataset(client, query_test, qea, rsa_test), return_key_id=False)  
+    
+    return train_ds, valid_ds, test_ds
+
+
 
 if __name__ == "__main__":
 
@@ -231,7 +446,7 @@ if __name__ == "__main__":
     pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
 
     pretrain(
-        train_valid_test_datasets_provider,
+        train_valid_test_datasets_provider,  # train_valid_test_datasets_provider,
         partial(model_provider, gpt_builder),
         ModelType.encoder_or_decoder,
         forward_step,

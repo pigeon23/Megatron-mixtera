@@ -88,12 +88,67 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
 
     return parser
 
+def add_mixtera_arguments(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group(title="mixtera")
+    group.add_argument(
+            "--mixtera.ip",
+            type=str,
+            default="127.0.0.1",
+            help="ip of mixtera server",
+        )
+    group.add_argument(
+            "--mixtera.port",
+            type=int,
+            default=8080,
+            help="port of mixtera server",
+        )
+    group.add_argument(
+            "--mixtera.vocab_size",
+            type=int,
+            default=-1,
+            help="vocab size of model",
+        )
+    group.add_argument(
+            "--mixtera.job_id",
+            type=str,
+            default="torchtitan job",
+            help="job name for the server",
+        )
+    group.add_argument(
+            "--mixtera.chunk_size",
+            type=int,
+            default=512,
+            help="chunk size",
+        )
+    group.add_argument(
+            "--mixtera.tunnel_via_server",
+            action="store_true",
+            help="Whether to tunnel the data via the server.",
+        )
+    group.add_argument(
+            "--mixtera.chunk_reading_degree_of_parallelism",
+            type=int,
+            default=1,
+            help="chunk_reading_degree_of_parallelism",
+        )
+    group.add_argument(
+            "--mixtera.pile",
+            type=str,
+            default="default",
+            choices=["ado", "default", "natural"],
+            help="""
+                currently we only support mixtures for the pile hardcoded, this picks the mixture for the training.
+            """,
+        )
+    return parser
+
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     """Parse all arguments."""
     parser = argparse.ArgumentParser(description='Megatron-LM Arguments',
                                      allow_abbrev=False)
 
     parser = add_megatron_arguments(parser)
+    parser = add_mixtera_arguments(parser)
 
     # Custom arguments.
     if extra_args_provider is not None:
@@ -2155,7 +2210,7 @@ def _add_training_args(parser):
     group.add_argument('--no-pin-cpu-params', action='store_false', dest='pin_cpu_params',
                        help='Disable pinning of CPU memory for parameters.')
     group.add_argument('--dataloader-type', type=str, default=None,
-                       choices=['single', 'cyclic', 'external'],
+                       choices=['single', 'cyclic', 'external', 'mixtera'],
                        help='Single pass vs multiple pass data loader')
     group.add_argument('--no-async-tensor-model-parallel-allreduce',
                        action='store_false',
