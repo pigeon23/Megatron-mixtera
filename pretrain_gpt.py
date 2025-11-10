@@ -60,27 +60,87 @@ def get_batch(data_iterator, vp_stage=None):
     # TODO: this is pretty hacky, find a better way
     if not is_first_or_last_pipeline_stage(vp_stage):
         next(data_iterator)
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     # get batches based on the TP rank you are on
     batch = get_batch_on_this_tp_rank(data_iterator)
-
+    
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)
     
-    print(f"Rank {torch.distributed.get_rank()}, tokens {batch['tokens']}", flush=True)
-    if torch.distributed.get_rank() == 0:
-        print("*****************************************")
+    # print(f"Rank {torch.distributed.get_rank()} has {batch.keys()}", flush=True)
+    # if torch.distributed.get_rank() == 0:
+    #     print("*****************************************")
 
     return batch.values()
-
+ 
 
 # define spiky loss as a loss that's 10x the max loss observed
 SPIKY_LOSS_FACTOR = 10
 
 
+class PerDomainLoss(torch.nn.Module):
+    def __init__(self, initial_num_domains=32, device=None):
+        super().__init__()
+        self._default_domains = initial_num_domains
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Initialize losses_tensor and counts_tensor
+        self.losses_tensor = torch.zeros(self._default_domains, dtype=torch.float32, device=self.device)
+        self.counts_tensor = torch.zeros(self._default_domains, dtype=torch.int64, device=self.device)
+        # Initialize max_domain_id as a tensor
+        self.max_domain_id = torch.tensor(self._default_domains - 1, dtype=torch.int32, device=self.device)
+        self.has_per_domain_loss = False
+
+    def forward(self, loss, key_ids=None):
+        loss = loss.reshape(-1)
+        if key_ids is not None:
+            with torch.no_grad():
+                loss = loss.to(torch.float32)
+                self.has_per_domain_loss = True
+
+                # Flatten key_ids
+                key_ids = key_ids.reshape(-1)
+
+                # Get maximum domain ID in the batch
+                batch_max_domain_id = key_ids.max()
+
+                # Update max_domain_id if necessary
+                if batch_max_domain_id > self.max_domain_id:
+                    self.max_domain_id = batch_max_domain_id
+                    self._default_domains = self.max_domain_id + 1
+
+                num_domains = self.max_domain_id + 1
+
+                # Ensure tensors are large enough
+                if num_domains > self.losses_tensor.size(0):
+                    extra_size = num_domains - self.losses_tensor.size(0)
+                    self.losses_tensor = torch.cat([
+                        self.losses_tensor,
+                        torch.zeros(extra_size, dtype=torch.float32, device=self.device)
+                    ], dim=0)
+                    self.counts_tensor = torch.cat([
+                        self.counts_tensor,
+                        torch.zeros(extra_size, dtype=torch.int64, device=self.device)
+                    ], dim=0)
+
+                # Accumulate per-domain losses and counts
+                self.losses_tensor.index_add_(0, key_ids, loss)
+                self.counts_tensor.index_add_(0, key_ids, torch.ones_like(key_ids, dtype=torch.int64))
+
+
+    def get_per_domain_stats(self):
+        return self.losses_tensor.clone(), self.counts_tensor.clone(), self.max_domain_id.clone()
+
+    def reset_per_domain_stats(self):
+        self.losses_tensor.zero_()
+        self.counts_tensor.zero_()
+        self.max_domain_id = torch.tensor(self._default_domains - 1, dtype=torch.int32, device=self.device)
+
+per_domain_loss_module = None
+
+
 def loss_func(
-    loss_mask: torch.Tensor, output_tensor: torch.Tensor, model: Optional[GPTModel] = None
+    loss_mask: torch.Tensor, output_tensor: torch.Tensor, model: Optional[GPTModel] = None, key_ids: Optional[torch.Tensor] = None, train_data_loader: Optional[torch.utils.data.DataLoader] = None, iteration: Optional[int] = None
 ):
     """Loss function.
 
@@ -96,6 +156,8 @@ def loss_func(
             the data parallel ranks
     """
     args = get_args()
+    
+    print(f"[Rank {torch.distributed.get_rank()}] loss func output tensor of shape {output_tensor.shape}, output tensor: {output_tensor}")
 
     if has_nvidia_modelopt and modelopt_args_enabled(args):  # [ModelOpt]
         return loss_func_modelopt(loss_mask, output_tensor, model=model)
@@ -103,6 +165,44 @@ def loss_func(
     losses = output_tensor.view(-1).float()
     loss_mask = loss_mask.view(-1).float()
     loss = torch.sum(losses * loss_mask)
+    
+    if args.dataloader_type == 'mixtera' and key_ids is not None:
+        assert train_data_loader is not None
+        assert iteration is not None
+        global per_domain_loss_module
+        if per_domain_loss_module is None:
+            per_domain_loss_module = PerDomainLoss(device=torch.cuda.current_device())
+        per_domain_loss_module(output_tensor, key_ids)
+        pp_tp_group = parallel_state.get_data_parallel_group()  # should be all last stage of pp in all dp groups
+        with torch.no_grad():
+            losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
+            max_handle = torch.distributed.all_reduce(max_id_tensor, op=torch.distributed.ReduceOp.MAX, async_op=True, group=pp_tp_group) # TODO: dp mesh vs dp group?
+            per_domain_loss_module.reset_per_domain_stats()
+            max_handle.wait()
+            max_domain_id = max_id_tensor.item()
+            # Resize tensors to the maximum domain ID
+            if losses_tensor.size(0) < max_domain_id + 1:
+                new_size = max_domain_id + 1 - losses_tensor.size(0)
+                losses_tensor = torch.cat(
+                    [losses_tensor, torch.zeros(new_size, dtype=losses_tensor.dtype, device=losses_tensor.device)], dim=0)
+                counts_tensor = torch.cat(
+                    [counts_tensor, torch.zeros(new_size, dtype=counts_tensor.dtype, device=counts_tensor.device)], dim=0)
+            handle_losses = torch.distributed.all_reduce(losses_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=pp_tp_group)
+            handle_counts = torch.distributed.all_reduce(counts_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=pp_tp_group)
+            handle_losses.wait()
+            handle_counts.wait()
+        
+        print(f"[Rank {torch.distributed.get_rank()}] [Iteration {iteration}] handle mixtera feedback ")
+        dp_rank = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        handle_mixtera_feedback(
+            train_data_loader,
+            iteration,
+            losses_tensor,
+            counts_tensor,
+            dp_rank,
+            tp_rank,
+        )
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
     rerun_state_machine = get_rerun_state_machine()
@@ -141,7 +241,7 @@ def loss_func(
     return (loss, num_tokens, {'lm loss': reporting_loss})
 
 
-def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = False):
+def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = False, train_data_loader: Optional[torch.utils.data.DataLoader] = None, iteration: Optional[int] = None):
     """Forward training step.
 
     Args:
@@ -157,9 +257,8 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
     global stimer
     with stimer(bdata=True):
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
-        tokens, labels, loss_mask, attention_mask, position_ids = get_batch(data_iterator, vp_stage)
+        tokens, labels, loss_mask, attention_mask, position_ids, key_ids = get_batch(data_iterator, vp_stage)
     timers('batch-generator').stop()
-
     with stimer:
         if args.use_legacy_models:
             output_tensor = model(tokens, position_ids, attention_mask, labels=labels)
@@ -170,14 +269,13 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
                 schedule_plan = model.build_schedule_plan(
                     tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask
                 )
-                return schedule_plan, partial(loss_func, loss_mask, model=model)
+                return schedule_plan, partial(loss_func, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader, iteration=iteration)
             else:
                 output_tensor = model(
                     tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask
                 )
-
     # [ModelOpt]: model is needed to access ModelOpt distillation losses
-    return output_tensor, partial(loss_func, loss_mask, model=model)
+    return output_tensor, partial(loss_func, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader, iteration=iteration)
 
 
 def is_dataset_built_on_rank(vp_stage=None):
@@ -302,9 +400,9 @@ def parsing_func(sample):
 
 
 class MixteraWrapper(torch.utils.data.IterableDataset):
-    def __init__(self, torch_ds: MixteraTorchDataset, return_key_id: bool):
+    def __init__(self, torch_ds: MixteraTorchDataset):
         self.torch_ds = torch_ds
-        self.return_key_id = return_key_id
+        self.return_key_id = torch_ds._return_key_id
         
         from transformers import AutoTokenizer
         _tokenizer = AutoTokenizer.from_pretrained(self.torch_ds._res_str_args.chunk_reading_tokenizer, use_fast=True)
@@ -342,8 +440,8 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
             if not self.return_key_id:
                 yield {"tokens": input, "labels": label, "attention_mask":attention_mask, "loss_mask": loss_mask, "position_ids": position_ids}
             else:
-                key_ids = torch.full((seq_len,), key_id, dtype=torch.long) if self.return_key_id else None
-                yield {"tokens": input}, label, key_ids
+                key_ids = torch.full((seq_len,), key_id, dtype=torch.long) 
+                yield {"tokens": input, "labels": label, "attention_mask":attention_mask, "loss_mask": loss_mask, "position_ids": position_ids, "key_ids": key_ids}
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -355,7 +453,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = "172.28.46.204"
+    server_host = "172.28.37.32"
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -378,9 +476,19 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
         ):
         print("already registered dataset")
     
-    mixture = InferringMixture(chunk_size=42)
+    mixture_static = InferringMixture(chunk_size=42)
+    
+    ado_log_dir = f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog"
+    if not os.path.exists(ado_log_dir):
+        os.mkdir(ado_log_dir)
+        
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "22"
+    job_id = "Megatron-mixtera" + "15"
+    
+    mixture_ado_def = DynamicMixture(strict=False, chunk_size=42, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=4096, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=10, ignore_initial_steps=5, start_step=10, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
+    
+    mixture = mixture_ado_def
+    
     query = Query.for_job(job_id).select(("redpajama_set_name", "==", "RedPajamaCommonCrawl"))
     
     world_size: int = torch.distributed.get_world_size()
@@ -388,6 +496,8 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     # dp_group_id = parallel_state.get_data_parallel_rank() # rank in its dp group or its dp group id ?
     dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
     dp_degree = parallel_state.get_data_parallel_world_size()
+    dp_group = parallel_state.get_model_parallel_group()
+    assert dp_group.size() == nodes_per_dp_group, f"dp_group handler has size of {dp_group.size()} not {nodes_per_dp_group}."
     node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank()) # Is this global rank?
     print(f"world_size: {world_size}, nodes_per_dp_group: {nodes_per_dp_group}, dp_group_id: {dp_group_id}, dp_degree: {dp_degree}, node_id: {node_id}")
     torch.distributed.barrier()
@@ -405,9 +515,11 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     if not os.path.exists(load_path / "mixtera.id"):
         load_path = None
         
-    mixtera_ds = MixteraTorchDataset(client, query, qea, rsa, checkpoint_path=load_path)
+    return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
+        
+    mixtera_ds = MixteraTorchDataset(client, query, qea, rsa, checkpoint_path=load_path, return_key_id=return_key_id)
     
-    train_ds = MixteraWrapper(mixtera_ds, return_key_id=False)    
+    train_ds = MixteraWrapper(mixtera_ds)    
     
     valid_ds = None
     test_ds = None
@@ -422,7 +534,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
                              chunk_reading_sequence_len=4096,
                              chunk_reading_eos=True)
     query_valid = Query.for_job(valid_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
-    valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid), return_key_id=False)  
+    valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid, return_key_id=return_key_id))  
     
     # test_jobid = job_id + "_test"
     # rsa_test = ResultStreamingArgs(job_id=test_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
@@ -431,7 +543,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     #                          chunk_reading_sequence_len=4096,
     #                          chunk_reading_eos=True)
     # query_test = Query.for_job(test_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
-    # test_ds = MixteraWrapper(MixteraTorchDataset(client, query_test, qea, rsa_test), return_key_id=False)  
+    # test_ds = MixteraWrapper(MixteraTorchDataset(client, query_test, qea, rsa_test), return_key_id=return_key_id)  
     
     return train_ds, valid_ds, test_ds
 

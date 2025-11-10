@@ -17,6 +17,7 @@ from mixtera.core.client import MixteraClient
 from mixtera.core.client.mixtera_client import QueryExecutionArgs, ResultStreamingArgs
 from mixtera.core.query import Query
 from mixtera.core.query.mixture import Mixture
+from torch.distributed import get_rank, barrier
 from torch.utils.data import IterableDataset, get_worker_info  # pylint: disable=import-error,no-name-in-module
 
 _shared_memory_names: set[str] = set()
@@ -264,7 +265,12 @@ class MixteraTorchDataset(IterableDataset):
             self._res_str_args.worker_id = self.worker_id
 
             for sample_chnk_idx, key_id, sample in self._client.stream_results(self._res_str_args):
+                
+                # with self.completion_lock: # no lock
                 status_array[self.worker_id] = sample_chnk_idx
+                logger.debug(f"[Rank {self._node_id}][Worker {self.worker_id}][Job {self._query.job_id}] {status_array}")
+                # barrier()
+                # ??????????
                 yield self._yield_func(key_id, sample)
 
             with self.completion_lock:

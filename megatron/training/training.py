@@ -1251,7 +1251,7 @@ def dummy_train_step(data_iterator):
             batch = get_batch_on_this_cp_rank(batch)
 
 
-def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func):
+def train_step(iteration, forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func, train_data_loader=None):
     """Single training step."""
     args = get_args()
     timers = get_timers()
@@ -1290,6 +1290,8 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             decoder_seq_length=args.decoder_seq_length,
             forward_only=False,
             adjust_tensor_shapes_fn=adjust_tensor_shapes_fn,
+            train_data_loader=train_data_loader,
+            iteration=iteration,
         )
     should_checkpoint, should_exit, exit_code = rerun_state_machine.should_checkpoint_and_exit()
     if should_exit:
@@ -2141,7 +2143,7 @@ def train(
     forward_backward_func = get_forward_backward_func()
     if args.enable_cuda_graph and args.cuda_graph_scope=="full_iteration":
         forward_backward_func = FullCudaGraphWrapper(forward_backward_func, cuda_graph_warmup_steps=args.cuda_graph_warmup_steps)
-
+    
     def get_e2e_base_metrics():
         """Get base metrics values for one-logger to calculate E2E tracking metrics."""
         num_floating_point_operations_since_current_train_start = (
@@ -2215,7 +2217,7 @@ def train(
     # Run training iterations till done.
     buffered_rollouts = None
     while iteration < args.train_iters:
-        print(f"Starting iteration {iteration}...")
+        print(f"[Rank {torch.distributed.get_rank()}] Starting iteration {iteration}...")
         if args.profile and torch.distributed.get_rank() in args.profile_ranks:
             if args.use_pytorch_profiler:
                 prof.step()
@@ -2296,9 +2298,10 @@ def train(
             grad_norm,
             num_zeros_in_grad,
         ) = train_step(
-            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func
+            iteration, forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func, train_data_loader
         )
         ft_integration.on_training_step_end()
+
         if should_checkpoint:
             save_checkpoint_and_time(
                 iteration,
