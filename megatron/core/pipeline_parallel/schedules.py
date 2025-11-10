@@ -288,6 +288,7 @@ def forward_step_calc_loss(
 
 
 def forward_step(
+    iteration,
     forward_step_func,
     data_iterator,
     model,
@@ -302,6 +303,7 @@ def forward_step(
     current_microbatch=None,
     vp_stage=None,
     is_last_stage=True,
+    train_data_loader=None,
 ):
     """Forward step for passed-in model.
 
@@ -397,13 +399,15 @@ def forward_step(
         context_manager = torch.autocast("cuda", dtype=config.autocast_dtype)
     else:
         context_manager = contextlib.nullcontext()
+    print(f"[Rank {torch.distributed.get_rank()}] Starting forward step iteration {iteration}, current_microbatch {current_microbatch}, checkpoint_activations_microbatch {checkpoint_activations_microbatch}", flush=True)
     with context_manager:
         if checkpoint_activations_microbatch is None:
-            output_tensor, loss_func = forward_step_func(data_iterator, model)
+            output_tensor, loss_func = forward_step_func(iteration, data_iterator, model, train_data_loader=train_data_loader)
         else:
             output_tensor, loss_func = forward_step_func(
-                data_iterator, model, checkpoint_activations_microbatch
+                iteration, data_iterator, model, checkpoint_activations_microbatch, train_data_loader=train_data_loader
             )
+    print(f"[Rank {torch.distributed.get_rank()}] Completed forward step iteration {iteration}, current_microbatch {current_microbatch}", flush=True)
     output_tensor, num_tokens = forward_step_calc_loss(
         model,
         output_tensor,
@@ -496,6 +500,7 @@ def check_first_val_step(first_val_step, forward_only, cond):
 
 def forward_backward_no_pipelining(
     *,
+    iteration,
     forward_step_func,
     data_iterator: Union[Iterator, List[Iterator]],
     model: Union[torch.nn.Module, List[torch.nn.Module]],
@@ -508,6 +513,7 @@ def forward_backward_no_pipelining(
     first_val_step: Optional[bool] = None,
     adjust_tensor_shapes_fn: Optional[Callable] = None,  # unused
     pg_collection: Optional[ProcessGroupCollection] = None,
+    train_data_loader: Optional[torch.utils.data.DataLoader] = None,
 ):
     """Run forward and backward passes with no pipeline parallelism"""
 
@@ -593,6 +599,7 @@ def forward_backward_no_pipelining(
         with no_sync_func():
             for i in range(num_microbatches - 1):
                 output_tensor, num_tokens = forward_step(
+                    iteration,
                     forward_step_func,
                     data_iterator,
                     model,
@@ -604,6 +611,7 @@ def forward_backward_no_pipelining(
                     collect_non_loss_data,
                     is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
                     current_microbatch=i,
+                    train_data_loader=train_data_loader
                 )
                 total_num_tokens += num_tokens
                 if not forward_only:
@@ -613,6 +621,7 @@ def forward_backward_no_pipelining(
         # Run computation for last microbatch out of context handler (want to
         # synchronize gradients).
         output_tensor, num_tokens = forward_step(
+            iteration,
             forward_step_func,
             data_iterator,
             model,
@@ -626,6 +635,7 @@ def forward_backward_no_pipelining(
                 first_val_step, forward_only, num_microbatches == 1
             ),
             current_microbatch=num_microbatches - 1,
+            train_data_loader=train_data_loader
         )
 
         total_num_tokens += num_tokens
@@ -808,6 +818,7 @@ def convert_schedule_table_to_order(num_warmup_microbatches, num_model_chunks, s
 
 def forward_backward_pipelining_with_interleaving(
     *,
+    iteration,
     forward_step_func,
     data_iterator: Union[Iterator, List[Iterator]],
     model: Union[torch.nn.Module, List[torch.nn.Module]],
@@ -821,6 +832,7 @@ def forward_backward_pipelining_with_interleaving(
     adjust_tensor_shapes_fn: Optional[Callable] = None,  # unused
     p2p_communicator: Optional[P2PCommunicator] = None,
     pg_collection: Optional[ProcessGroupCollection] = None,
+    train_data_loader: Optional[torch.utils.data.DataLoader] = None,
 ):
     """Run interleaved 1F1B schedule (model split into model chunks), with
     communication between pipeline stages as needed.
@@ -1207,6 +1219,7 @@ def forward_backward_pipelining_with_interleaving(
         )
 
         output_tensor, num_tokens = forward_step(
+            iteration,
             forward_step_func,
             data_iterator[model_chunk_id],
             model[model_chunk_id],
@@ -1225,6 +1238,7 @@ def forward_backward_pipelining_with_interleaving(
             current_microbatch=microbatch_id,
             vp_stage=model_chunk_id,
             is_last_stage=_is_vp_last_stage(vp_stage=model_chunk_id) and is_pp_last_stage(pp_group),
+            train_data_loader=train_data_loader
         )
 
         forward_step_helper_postprocess(model_chunk_id, output_tensor, num_tokens)
@@ -1948,6 +1962,7 @@ def get_tensor_shapes(
 
 def forward_backward_pipelining_without_interleaving(
     *,
+    iteration,
     forward_step_func,
     data_iterator: Union[Iterator, List[Iterator]],
     model: Union[torch.nn.Module, List[torch.nn.Module]],
@@ -1961,6 +1976,7 @@ def forward_backward_pipelining_without_interleaving(
     adjust_tensor_shapes_fn: Optional[Callable] = None,
     p2p_communicator: Optional[P2PCommunicator] = None,
     pg_collection: Optional[ProcessGroupCollection] = None,
+    train_data_loader: Optional[torch.utils.data.DataLoader] = None,
 ):
     """Run non-interleaved 1F1B schedule, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
@@ -2133,6 +2149,7 @@ def forward_backward_pipelining_without_interleaving(
             recv_tensor_shapes, is_pp_first_stage(p2p_communicator.pp_group)
         )
         output_tensor, num_tokens = forward_step(
+            iteration,
             forward_step_func,
             data_iterator,
             model,
@@ -2146,6 +2163,7 @@ def forward_backward_pipelining_without_interleaving(
             is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
             current_microbatch=i,
             is_last_stage=is_pp_last_stage(p2p_communicator.pp_group),
+            train_data_loader=train_data_loader,
         )
         p2p_communicator.send_forward(output_tensor, is_pp_last_stage(p2p_communicator.pp_group))
         total_num_tokens += num_tokens
@@ -2176,6 +2194,7 @@ def forward_backward_pipelining_without_interleaving(
             checkpoint_activations_microbatch = None
 
         output_tensor, num_tokens = forward_step(
+            iteration,
             forward_step_func,
             data_iterator,
             model,
@@ -2191,6 +2210,7 @@ def forward_backward_pipelining_without_interleaving(
             ),
             current_microbatch=i + num_warmup_microbatches,
             is_last_stage=is_pp_last_stage(p2p_communicator.pp_group),
+            train_data_loader=train_data_loader
         )
         total_num_tokens += num_tokens
 

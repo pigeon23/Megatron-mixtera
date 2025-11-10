@@ -276,12 +276,16 @@ class MixteraClient(ABC):
         Raises:
             RuntimeError if query has not been executed.
         """
+        cnt = 0
         for result_chunk in self._stream_result_chunks(args.job_id, args.dp_group_id, args.node_id, args.worker_id):
             with self.current_mixture_id_val.get_lock():
                 new_id = max(result_chunk.mixture_id, self.current_mixture_id_val.get_obj().value)
                 self.current_mixture_id_val.get_obj().value = new_id
-                # logger.debug(f"Set current mixture ID to {new_id}")
+    
 
+                logger.debug(f"[Rank {args.node_id}][Worker {args.worker_id}][Job {args.job_id}] Get result chunk {cnt}")
+                cnt += 1
+                
             result_chunk.configure_result_streaming(
                 client=self,
                 args=args,
