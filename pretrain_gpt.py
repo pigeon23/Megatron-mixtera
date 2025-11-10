@@ -62,18 +62,15 @@ def get_batch(data_iterator, vp_stage=None):
         next(data_iterator)
         return None, None, None, None, None, None
 
-    print(f"Rank {torch.distributed.get_rank()} start fetch batch", flush=True)
     # get batches based on the TP rank you are on
     batch = get_batch_on_this_tp_rank(data_iterator)
     
-    print(f"Rank {torch.distributed.get_rank()} finish batch {batch.keys()}", flush=True)
-
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)
     
-    print(f"Rank {torch.distributed.get_rank()} has {batch.keys()}", flush=True)
-    if torch.distributed.get_rank() == 0:
-        print("*****************************************")
+    # print(f"Rank {torch.distributed.get_rank()} has {batch.keys()}", flush=True)
+    # if torch.distributed.get_rank() == 0:
+    #     print("*****************************************")
 
     return batch.values()
  
@@ -143,7 +140,7 @@ per_domain_loss_module = None
 
 
 def loss_func(
-    iteration, loss_mask: torch.Tensor, output_tensor: torch.Tensor, model: Optional[GPTModel] = None, key_ids: Optional[torch.Tensor] = None, train_data_loader: Optional[torch.utils.data.DataLoader] = None
+    loss_mask: torch.Tensor, output_tensor: torch.Tensor, model: Optional[GPTModel] = None, key_ids: Optional[torch.Tensor] = None, train_data_loader: Optional[torch.utils.data.DataLoader] = None, iteration: Optional[int] = None
 ):
     """Loss function.
 
@@ -171,6 +168,7 @@ def loss_func(
     
     if args.dataloader_type == 'mixtera' and key_ids is not None:
         assert train_data_loader is not None
+        assert iteration is not None
         global per_domain_loss_module
         if per_domain_loss_module is None:
             per_domain_loss_module = PerDomainLoss(device=torch.cuda.current_device())
@@ -243,7 +241,7 @@ def loss_func(
     return (loss, num_tokens, {'lm loss': reporting_loss})
 
 
-def forward_step(iteration, data_iterator, model: GPTModel, return_schedule_plan: bool = False, train_data_loader: Optional[torch.utils.data.DataLoader] = None):
+def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = False, train_data_loader: Optional[torch.utils.data.DataLoader] = None, iteration: Optional[int] = None):
     """Forward training step.
 
     Args:
@@ -261,8 +259,6 @@ def forward_step(iteration, data_iterator, model: GPTModel, return_schedule_plan
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
         tokens, labels, loss_mask, attention_mask, position_ids, key_ids = get_batch(data_iterator, vp_stage)
     timers('batch-generator').stop()
-    print(f"[Rank {torch.distributed.get_rank()}] forward step obtained batch, schedule plan = {return_schedule_plan}", flush=True)
-
     with stimer:
         if args.use_legacy_models:
             output_tensor = model(tokens, position_ids, attention_mask, labels=labels)
@@ -273,15 +269,13 @@ def forward_step(iteration, data_iterator, model: GPTModel, return_schedule_plan
                 schedule_plan = model.build_schedule_plan(
                     tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask
                 )
-                print(f"[Rank {torch.distributed.get_rank()}] forward step completed model forward with schedule plan", flush=True)
-                return schedule_plan, partial(loss_func, iteration, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader)
+                return schedule_plan, partial(loss_func, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader, iteration=iteration)
             else:
                 output_tensor = model(
                     tokens, position_ids, attention_mask, labels=labels, loss_mask=loss_mask
                 )
-    print(f"[Rank {torch.distributed.get_rank()}] forward step completed model forward", flush=True)
     # [ModelOpt]: model is needed to access ModelOpt distillation losses
-    return output_tensor, partial(loss_func, iteration, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader)
+    return output_tensor, partial(loss_func, loss_mask, model=model, key_ids=key_ids, train_data_loader=train_data_loader, iteration=iteration)
 
 
 def is_dataset_built_on_rank(vp_stage=None):
@@ -459,7 +453,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = "172.28.35.176"
+    server_host = "172.28.37.32"
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -489,7 +483,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
         os.mkdir(ado_log_dir)
         
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "21"
+    job_id = "Megatron-mixtera" + "15"
     
     mixture_ado_def = DynamicMixture(strict=False, chunk_size=42, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=4096, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=10, ignore_initial_steps=5, start_step=10, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
     

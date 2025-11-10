@@ -1281,7 +1281,6 @@ def train_step(iteration, forward_step_func, data_iterator, model, optimizer, op
 
         # Forward pass.
         losses_reduced = forward_backward_func(
-            iteration=iteration,
             forward_step_func=forward_step_func,
             data_iterator=data_iterator,
             model=model,
@@ -1292,8 +1291,8 @@ def train_step(iteration, forward_step_func, data_iterator, model, optimizer, op
             forward_only=False,
             adjust_tensor_shapes_fn=adjust_tensor_shapes_fn,
             train_data_loader=train_data_loader,
+            iteration=iteration,
         )
-        print(f"[Rank {torch.distributed.get_rank()}] Completed forward and backward pass.")
     should_checkpoint, should_exit, exit_code = rerun_state_machine.should_checkpoint_and_exit()
     if should_exit:
         return {}, True, should_checkpoint, should_exit, exit_code, None, None
@@ -2144,7 +2143,7 @@ def train(
     forward_backward_func = get_forward_backward_func()
     if args.enable_cuda_graph and args.cuda_graph_scope=="full_iteration":
         forward_backward_func = FullCudaGraphWrapper(forward_backward_func, cuda_graph_warmup_steps=args.cuda_graph_warmup_steps)
-    print(f"[Rank {torch.distributed.get_rank()}] Using forward_backward_func: {forward_backward_func.__name__}")
+    
     def get_e2e_base_metrics():
         """Get base metrics values for one-logger to calculate E2E tracking metrics."""
         num_floating_point_operations_since_current_train_start = (
@@ -2302,7 +2301,7 @@ def train(
             iteration, forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func, train_data_loader
         )
         ft_integration.on_training_step_end()
-        print(f"[Rank {torch.distributed.get_rank()}] Finished iteration {iteration}.")
+
         if should_checkpoint:
             save_checkpoint_and_time(
                 iteration,

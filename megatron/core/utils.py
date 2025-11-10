@@ -1813,7 +1813,6 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
     # and chunk_3 are assigned to GPU0, chunk_1 and chunk_2 are assigned to GPU1, so
     # that we can get balanced workload among GPUs in a context parallel group.
     cp_size = parallel_state.get_context_parallel_world_size()
-    print(f"[Rank {torch.distributed.get_rank()}] CP size: {cp_size}")
     if cp_size > 1:
         cp_rank = parallel_state.get_context_parallel_rank()
         for key, val in batch.items():
@@ -1831,7 +1830,6 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
                 val = val.index_select(seq_dim, index)
                 val = val.view(*val.shape[0:seq_dim], -1, *val.shape[(seq_dim + 2) :])
                 batch[key] = val
-    print(f"[Rank {torch.distributed.get_rank()}] CP size: {cp_size}")
     return batch
 
 

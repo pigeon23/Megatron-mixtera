@@ -583,7 +583,7 @@ def get_batch_on_this_tp_rank(data_iterator):
         if 'key_ids' in data:
             key_ids = torch.empty(
                 (args.micro_batch_size, args.seq_length),
-                dtype=torch.float32,
+                dtype=torch.long,
                 device=torch.cuda.current_device(),
             )
         else:
