@@ -7,7 +7,7 @@ import dill
 import numpy as np
 
 
-async def read_bytes(num_bytes: int, reader: asyncio.StreamReader, timeout: float = 10.0) -> Optional[bytearray]:
+async def read_bytes(num_bytes: int, reader: asyncio.StreamReader, timeout: float = 30.0) -> Optional[bytearray]:
     """
     Asynchronously read exactly `num_bytes` from `asyncio.StreamReader`, with a timeout.
     The difference to reader.readexactly() is that we do not assume all data is available in the stream yet,

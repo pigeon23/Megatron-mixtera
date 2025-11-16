@@ -268,7 +268,7 @@ class MixteraTorchDataset(IterableDataset):
                 
                 # with self.completion_lock: # no lock
                 status_array[self.worker_id] = sample_chnk_idx
-                logger.debug(f"[Rank {self._node_id}][Worker {self.worker_id}][Job {self._query.job_id}] {status_array}")
+                # logger.debug(f"[Rank {self._node_id}][Worker {self.worker_id}][Job {self._query.job_id}] {status_array}")
                 # barrier()
                 # ??????????
                 yield self._yield_func(key_id, sample)

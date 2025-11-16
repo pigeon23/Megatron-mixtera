@@ -784,7 +784,6 @@ def pretrain(
                 dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
                 node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
                 torch.distributed.barrier()
-                torch.cuda.synchronize()
                 handle_mixtera_checkpoint(train_data_loader, args.save, dp_group_id, node_id, False)
 
         one_logger and one_logger.log_metrics(
@@ -1893,7 +1892,6 @@ def checkpoint_and_decide_exit(
             dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
             node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
             torch.distributed.barrier()
-            torch.cuda.synchronize()
             print(f"Rank [{torch.distributed.get_rank()}] saves checkpoint at iteration {iteration}", flush=True)
             handle_mixtera_checkpoint(train_data_loader, args.save, dp_group_id, node_id, False)
 

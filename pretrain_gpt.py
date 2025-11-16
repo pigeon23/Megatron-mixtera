@@ -54,6 +54,8 @@ except ImportError:
 
 stimer = StragglerDetector()
 
+os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
+
 
 def get_batch(data_iterator, vp_stage=None):
     """Generate a batch."""
@@ -157,7 +159,7 @@ def loss_func(
     """
     args = get_args()
     
-    print(f"[Rank {torch.distributed.get_rank()}] loss func output tensor of shape {output_tensor.shape}, output tensor: {output_tensor}")
+    # print(f"[Rank {torch.distributed.get_rank()}] loss func output tensor of shape {output_tensor.shape}, output tensor: {output_tensor}")
 
     if has_nvidia_modelopt and modelopt_args_enabled(args):  # [ModelOpt]
         return loss_func_modelopt(loss_mask, output_tensor, model=model)
@@ -192,7 +194,7 @@ def loss_func(
             handle_losses.wait()
             handle_counts.wait()
         
-        print(f"[Rank {torch.distributed.get_rank()}] [Iteration {iteration}] handle mixtera feedback ")
+        # print(f"[Rank {torch.distributed.get_rank()}] [Iteration {iteration}] handle mixtera feedback ")
         dp_rank = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
         tp_rank = parallel_state.get_tensor_model_parallel_rank()
         handle_mixtera_feedback(
@@ -258,6 +260,7 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
     with stimer(bdata=True):
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
         tokens, labels, loss_mask, attention_mask, position_ids, key_ids = get_batch(data_iterator, vp_stage)
+        print(f"[Rank {torch.distributed.get_rank()}] obtained batch at iteration {iteration}")
     timers('batch-generator').stop()
     with stimer:
         if args.use_legacy_models:
@@ -453,7 +456,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = "172.28.37.32"
+    server_host = "172.28.39.136"
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -468,28 +471,62 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     #     print("Dataset already registered.")
         
     if not client.register_dataset(
-            "slimpajama_chunk1_2",
-            Path("/iopsstor/scratch/cscs/yiswang/data/mixtera"),
+            "pile_full",
+            Path("/capstor/store/cscs/swissai/infra02/mixtera_a09/data/tp_processed/train_processed_split1k"),
+            # Path("/iopsstor/scratch/cscs/yiswang/data/pile"),
             JSONLDataset,
             parsing_func,
-            "SLIM_PAJAMA",
+            "PILE" # "SLIM_PAJAMA",
         ):
         print("already registered dataset")
+    chunk_size = 512
+    seq_len = args.seq_length
     
-    mixture_static = InferringMixture(chunk_size=42)
+    # mixture = InferringMixture(chunk_size=chunk_size) # always use strict = True for all if using inferring mixture
+    
+    # mixture_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+    #             MixtureKey({"redpajama_set_name": ["RedPajamaArXiv"]}): 0.4,
+    #             MixtureKey({"redpajama_set_name": ["RedPajamaCommonCrawl"]}): 0.6
+    #             })
+    
+    mixture_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
+                MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
+                MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
+                MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
+                MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.015835745965429738,
+                MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.12148621531516873,
+                MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.10960682218906206,
+                MixtureKey({"pile_set_name": ["StackExchange"]}): 0.049107965728456646,
+                MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1824984780261193,
+                MixtureKey({"pile_set_name": ["ArXiv"]}): 0.08862621733009907,
+                MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.02616577419097875,
+                MixtureKey({"pile_set_name": ["Books3"]}): 0.10458626728299704,
+                MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.04016661238580172,
+                MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.02212837481440004,
+                MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0018685647881937016,
+                MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.006327357399975309,
+                MixtureKey({"pile_set_name": ["EuroParl"]}): 0.008072738376112661,
+                MixtureKey({"pile_set_name": ["HackerNews"]}): 0.004731183407655429,
+                MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.019084626704901235,
+                MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.004027438721554198,
+                MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0026731438901686708,
+                MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.004850316881507234,
+                MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
+            })
     
     ado_log_dir = f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog"
     if not os.path.exists(ado_log_dir):
         os.mkdir(ado_log_dir)
         
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "15"
+    job_id = "Megatron-mixtera" + "22"
     
-    mixture_ado_def = DynamicMixture(strict=False, chunk_size=42, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=4096, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=10, ignore_initial_steps=5, start_step=10, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
+
+    mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
     
     mixture = mixture_ado_def
     
-    query = Query.for_job(job_id).select(("redpajama_set_name", "==", "RedPajamaCommonCrawl"))
+    query = Query.for_job(job_id).select(None) # ("redpajama_set_name", "!=", "RedPajamaCommonCrawl")
     
     world_size: int = torch.distributed.get_world_size()
     nodes_per_dp_group = world_size // parallel_state.get_data_parallel_world_size()
@@ -504,10 +541,11 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
 
     
     qea = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
-    rsa = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
+    # TODO set tunnel_via_server to False 
+    rsa = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=False, # set tunnel_via_server to False 
                              chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
                              chunk_reading_mixture_type="token", 
-                             chunk_reading_sequence_len=4096,
+                             chunk_reading_sequence_len=seq_len,
                              chunk_reading_eos=True)
     # using eos, require extra process with built-in method: _get_ltor_masks_and_position_ids
     # bos and eos token id: 50256
@@ -524,17 +562,17 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     valid_ds = None
     test_ds = None
     
-    valid_jobid = job_id + "_valid"
-    valid_rand = torch.randint(1, 1000, (1,)).cuda()
-    torch.distributed.broadcast(valid_rand, src=0)
-    valid_jobid += str(valid_rand.item())
-    rsa_valid = ResultStreamingArgs(job_id=valid_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
-                             chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
-                             chunk_reading_mixture_type="token", 
-                             chunk_reading_sequence_len=4096,
-                             chunk_reading_eos=True)
-    query_valid = Query.for_job(valid_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
-    valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid, return_key_id=return_key_id))  
+    # valid_jobid = job_id + "_valid"
+    # valid_rand = torch.randint(1, 1000, (1,)).cuda()
+    # torch.distributed.broadcast(valid_rand, src=0)
+    # valid_jobid += str(valid_rand.item())
+    # rsa_valid = ResultStreamingArgs(job_id=valid_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
+    #                          chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
+    #                          chunk_reading_mixture_type="token", 
+    #                          chunk_reading_sequence_len=seq_len,
+    #                          chunk_reading_eos=True)
+    # query_valid = Query.for_job(valid_jobid).select(None)
+    # valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid, return_key_id=return_key_id))  
     
     # test_jobid = job_id + "_test"
     # rsa_test = ResultStreamingArgs(job_id=test_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
