@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=pretrain
-#SBATCH --output=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.out
-#SBATCH --error=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.err
+#SBATCH --job-name=evaluate
+#SBATCH --output=/iopsstor/scratch/cscs/yiswang/server_logs/evaluate_%j.out
+#SBATCH --error=/iopsstor/scratch/cscs/yiswang/server_logs/evaluate_%j.err
 #SBATCH --environment=mixtera
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --account=a-infra02
-#SBATCH --time=11:59:00
+#SBATCH --time=07:59:00
 
 
 # export LOGLEVEL=DEBUG
@@ -19,14 +19,17 @@
 # export OMP_NUM_THREADS=64
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_NET="AWS Libfabric"
+export CUDA_VISIBLE_DEVICES=0
 
-pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
+which python
+
+cd /iopsstor/scratch/cscs/yiswang/lm-evaluation-harness
+pip install -e .
+pip install datasets==2.21.0
+
 pip install megatron-core
 pip install --no-build-isolation transformer-engine[pytorch]
 
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/tensorboard
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog
 pushd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
 
@@ -36,7 +39,7 @@ export WORLD_SIZE=$(( SLURM_NNODES * SLURM_NTASKS_PER_NODE ))
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-GPUS_PER_NODE=4
+GPUS_PER_NODE=1
 # Change for multinode config
 # MASTER_ADDR=localhost
 # MASTER_PORT=1234
@@ -44,8 +47,8 @@ NUM_NODES=$SLURM_NNODES
 # NODE_RANK=0
 # WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES)) 
 
-CHECKPOINT_PATH="experiments/ckpt/" # $1 #<Specify path>
-TENSORBOARD_LOGS_PATH="experiments/tensorboard/" # $2 #<Specify path>
+CHECKPOINT_PATH="experiments/18-11-2025/ckpt/" # $1 #<Specify path>
+TENSORBOARD_LOGS_PATH="experiments/18-11-2025/tensorboard/" # $2 #<Specify path>
 VOCAB_FILE="experiments/gpt_vocab.json" # $3 #<Specify path to file>/gpt2-vocab.json
 MERGE_FILE="experiments/gpt_merges.txt" # $4 #<Specify path to file>/gpt2-merges.txt
 DATA_PATH="processed_data/processed_data_text_document" # $5 #<Specify path and file prefix>_text_document
@@ -61,41 +64,31 @@ DISTRIBUTED_ARGS=(
 GPT_MODEL_ARGS=(
     --num-layers 24 
     --hidden-size 2048
-    --ffn-hidden-size 5464
     --num-attention-heads 16
     --seq-length 2048 
     --max-position-embeddings 2048 
     --attention-backend auto # Can use (flash/fused/unfused/local)
     --normalization RMSNorm
     --swiglu
-    --attention-dropout 0
-    --hidden-dropout 0
-    # --no-bias-swiglu-fusion
-    # --no-bias-dropout-fusion
     --position-embedding-type rope
-    --untie-embeddings-and-output-weights
-    --disable-bias-linear
 )
 
 TRAINING_ARGS=(
-    --micro-batch-size 8
+    --micro-batch-size 32
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
-    --train-iters 30000
+    --train-iters 10000
     --weight-decay 0.1 
     --adam-beta1 0.9 
     --adam-beta2 0.95 
     --init-method-std 0.006 
     --clip-grad 1.0 
-    --bf16
+    --fp16
     --lr 0.001 # 6.0e-5 
-    --lr-decay-style WSD 
-    --lr-wsd-decay-style linear
-    --lr-wsd-decay-iters 3000
+    --lr-decay-style linear 
+    --lr-decay-iters 10000
     --lr-warmup-iters 500
-    # --lr-decay-iters 10000
-    # --lr-warmup-iters 500
-    --lr-warmup-init 0
+    --lr-warmup-init 0.0001
     # --min-lr 6.0e-6
     # --lr-warmup-fraction .001 
     # --lr-decay-iters 430000 
@@ -112,20 +105,19 @@ DATA_ARGS=(
     --vocab-file $VOCAB_FILE 
     --merge-file $MERGE_FILE 
     --split 949,50,1
-    --dataloader-type mixtera # mixtera
+    --dataloader-type mixtera
     --num-workers 0
+    --tokenizer-type GPT2BPETokenizer  # will be overridden by mixtera tokenizer
 )
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 100
-    --save-interval 2500
+    --save-interval 100
     --eval-interval 100000 
     --save $CHECKPOINT_PATH 
     --load $CHECKPOINT_PATH 
     --eval-iters 0
     --tensorboard-dir $TENSORBOARD_LOGS_PATH 
-    --record-memory-history
-    --log-memory-to-tensorboard
 )
 
 echo "[sbatch-master] running on $(hostname)"
@@ -142,7 +134,7 @@ echo \"[srun] rank=\$SLURM_PROCID host=\$(hostname) noderank=\$SLURM_NODEID loca
 export node_rank=\$SLURM_NODEID
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
-torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
+torchrun "${DISTRIBUTED_ARGS[@]}" evaluate_gpt.py \
     "${GPT_MODEL_ARGS[@]}" \
     "${TRAINING_ARGS[@]}" \
     "${MODEL_PARALLEL_ARGS[@]}" \
@@ -151,5 +143,3 @@ torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "
 
 srun bash -c "$CMD"
-
-# bash ./examples/gpt3/train_gpt3_175b_distributed.sh experiments/ckpt/ experiments/tensorboard/ experiments/gpt_vocab.json experiments/gpt_merges.txt processed_data/processed_data_text_document

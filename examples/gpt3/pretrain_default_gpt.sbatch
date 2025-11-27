@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=pretrain
-#SBATCH --output=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.out
-#SBATCH --error=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.err
+#SBATCH --output=/iopsstor/scratch/cscs/yiswang/server_logs/pretrain/pretrain_%j.out
+#SBATCH --error=/iopsstor/scratch/cscs/yiswang/server_logs/pretrain/pretrain_%j.err
 #SBATCH --environment=mixtera
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
@@ -66,15 +66,7 @@ GPT_MODEL_ARGS=(
     --seq-length 2048 
     --max-position-embeddings 2048 
     --attention-backend auto # Can use (flash/fused/unfused/local)
-    --normalization RMSNorm
-    --swiglu
-    --attention-dropout 0
-    --hidden-dropout 0
-    # --no-bias-swiglu-fusion
-    # --no-bias-dropout-fusion
-    --position-embedding-type rope
-    --untie-embeddings-and-output-weights
-    --disable-bias-linear
+    # --untie-embeddings-and-output-weights
 )
 
 TRAINING_ARGS=(
@@ -88,7 +80,7 @@ TRAINING_ARGS=(
     --init-method-std 0.006 
     --clip-grad 1.0 
     --bf16
-    --lr 0.001 # 6.0e-5 
+    --lr 0.0001 # 6.0e-5 
     --lr-decay-style WSD 
     --lr-wsd-decay-style linear
     --lr-wsd-decay-iters 3000
@@ -118,7 +110,7 @@ DATA_ARGS=(
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 100
-    --save-interval 2500
+    --save-interval 100
     --eval-interval 100000 
     --save $CHECKPOINT_PATH 
     --load $CHECKPOINT_PATH 

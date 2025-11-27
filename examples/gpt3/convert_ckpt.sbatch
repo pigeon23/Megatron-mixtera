@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=pretrain
-#SBATCH --output=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.out
-#SBATCH --error=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.err
+#SBATCH --job-name=convert
+#SBATCH --output=/iopsstor/scratch/cscs/yiswang/server_logs/convert-ckpt/convert-ckpt_%j.out
+#SBATCH --error=/iopsstor/scratch/cscs/yiswang/server_logs/convert-ckpt/convert-ckpt_%j.err
 #SBATCH --environment=mixtera
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
@@ -20,14 +20,8 @@
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_NET="AWS Libfabric"
 
-pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
 pip install megatron-core
 pip install --no-build-isolation transformer-engine[pytorch]
-
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/tensorboard
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog
-pushd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
 
 export MASTER_ADDR=$(scontrol show hostname "$SLURM_NODELIST" | head -n1)  
@@ -44,7 +38,10 @@ NUM_NODES=$SLURM_NNODES
 # NODE_RANK=0
 # WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES)) 
 
-CHECKPOINT_PATH="experiments/ckpt/" # $1 #<Specify path>
+CHECKPOINT_PATH="experiments/18-11-2025/ckpt/" # $1 #<Specify path>
+
+CONVERT_CHECKPOINT_PATH="experiments/18-11-2025/ckpt-convert/"
+
 TENSORBOARD_LOGS_PATH="experiments/tensorboard/" # $2 #<Specify path>
 VOCAB_FILE="experiments/gpt_vocab.json" # $3 #<Specify path to file>/gpt2-vocab.json
 MERGE_FILE="experiments/gpt_merges.txt" # $4 #<Specify path to file>/gpt2-merges.txt
@@ -61,7 +58,7 @@ DISTRIBUTED_ARGS=(
 GPT_MODEL_ARGS=(
     --num-layers 24 
     --hidden-size 2048
-    --ffn-hidden-size 5464
+    # --ffn-hidden-size 5464
     --num-attention-heads 16
     --seq-length 2048 
     --max-position-embeddings 2048 
@@ -73,7 +70,6 @@ GPT_MODEL_ARGS=(
     # --no-bias-swiglu-fusion
     # --no-bias-dropout-fusion
     --position-embedding-type rope
-    --untie-embeddings-and-output-weights
     --disable-bias-linear
 )
 
@@ -81,14 +77,14 @@ TRAINING_ARGS=(
     --micro-batch-size 8
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
-    --train-iters 30000
+    --train-iters 10000
     --weight-decay 0.1 
     --adam-beta1 0.9 
     --adam-beta2 0.95 
     --init-method-std 0.006 
     --clip-grad 1.0 
     --bf16
-    --lr 0.001 # 6.0e-5 
+    --lr 0.0001 # 6.0e-5 
     --lr-decay-style WSD 
     --lr-wsd-decay-style linear
     --lr-wsd-decay-iters 3000
@@ -99,11 +95,15 @@ TRAINING_ARGS=(
     # --min-lr 6.0e-6
     # --lr-warmup-fraction .001 
     # --lr-decay-iters 430000 
+    --no-load-optim
+    --load-main-params-from-ckpt
+    --no-load-rng
+    --use-checkpoint-args
 )
 
 MODEL_PARALLEL_ARGS=(
-	--tensor-model-parallel-size 1
-	--pipeline-model-parallel-size 1
+	--tensor-model-parallel-size 2
+	--pipeline-model-parallel-size 2
     --distributed-timeout-minutes 30
 )
 
@@ -118,7 +118,7 @@ DATA_ARGS=(
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 100
-    --save-interval 2500
+    --save-interval 100
     --eval-interval 100000 
     --save $CHECKPOINT_PATH 
     --load $CHECKPOINT_PATH 
@@ -126,6 +126,8 @@ EVAL_AND_LOGGING_ARGS=(
     --tensorboard-dir $TENSORBOARD_LOGS_PATH 
     --record-memory-history
     --log-memory-to-tensorboard
+    --ckpt-convert-format torch
+    --ckpt-convert-save $CONVERT_CHECKPOINT_PATH
 )
 
 echo "[sbatch-master] running on $(hostname)"

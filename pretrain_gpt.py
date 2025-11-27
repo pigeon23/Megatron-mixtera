@@ -54,9 +54,6 @@ except ImportError:
 
 stimer = StragglerDetector()
 
-os.environ["NCCL_TIMEOUT"] = str(30 * 60 * 1000)
-
-
 def get_batch(data_iterator, vp_stage=None):
     """Generate a batch."""
     # TODO: this is pretty hacky, find a better way
@@ -456,7 +453,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = "172.28.39.136"
+    server_host = "172.28.37.80"
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -470,8 +467,8 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     #     ):
     #     print("Dataset already registered.")
         
-    if not client.register_dataset(
-            "pile_full",
+    if torch.distributed.get_rank() == 0 and not client.register_dataset(
+            "pile",
             Path("/capstor/store/cscs/swissai/infra02/mixtera_a09/data/tp_processed/train_processed_split1k"),
             # Path("/iopsstor/scratch/cscs/yiswang/data/pile"),
             JSONLDataset,
@@ -479,6 +476,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
             "PILE" # "SLIM_PAJAMA",
         ):
         print("already registered dataset")
+    torch.distributed.barrier()
     chunk_size = 512
     seq_len = args.seq_length
     
@@ -490,36 +488,37 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     #             })
     
     mixture_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
-                MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.04493927695030662,
-                MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.000998021865918546,
-                MixtureKey({"pile_set_name": ["Github"]}): 0.12267758913758665,
-                MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.015835745965429738,
-                MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.12148621531516873,
-                MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.10960682218906206,
-                MixtureKey({"pile_set_name": ["StackExchange"]}): 0.049107965728456646,
-                MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1824984780261193,
-                MixtureKey({"pile_set_name": ["ArXiv"]}): 0.08862621733009907,
-                MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.02616577419097875,
-                MixtureKey({"pile_set_name": ["Books3"]}): 0.10458626728299704,
-                MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.04016661238580172,
-                MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.02212837481440004,
-                MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0018685647881937016,
-                MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.006327357399975309,
-                MixtureKey({"pile_set_name": ["EuroParl"]}): 0.008072738376112661,
-                MixtureKey({"pile_set_name": ["HackerNews"]}): 0.004731183407655429,
-                MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.019084626704901235,
-                MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.004027438721554198,
-                MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0026731438901686708,
-                MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.004850316881507234,
-                MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0195412686476066,
+                MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
+                MixtureKey({"pile_set_name": ["PubMed Central"]}): 0.1071,
+                MixtureKey({"pile_set_name": ["Books3"]}): 0.0676,
+                MixtureKey({"pile_set_name": ["OpenWebText2"]}): 0.1247,
+                MixtureKey({"pile_set_name": ["ArXiv"]}): 0.1052,
+                MixtureKey({"pile_set_name": ["Github"]}): 0.0427,
+                MixtureKey({"pile_set_name": ["FreeLaw"]}): 0.0386,
+                MixtureKey({"pile_set_name": ["StackExchange"]}): 0.0929,
+                MixtureKey({"pile_set_name": ["USPTO Backgrounds"]}): 0.0420,
+                MixtureKey({"pile_set_name": ["PubMed Abstracts"]}): 0.0845,
+                MixtureKey({"pile_set_name": ["Gutenberg (PG-19)"]}): 0.0199,
+                MixtureKey({"pile_set_name": ["OpenSubtitles"]}): 0.0124,
+                MixtureKey({"pile_set_name": ["Wikipedia (en)"]}): 0.0919,
+                MixtureKey({"pile_set_name": ["DM Mathematics"]}): 0.0198,
+                MixtureKey({"pile_set_name": ["Ubuntu IRC"]}): 0.0074,
+                MixtureKey({"pile_set_name": ["BookCorpus2"]}): 0.0044,
+                MixtureKey({"pile_set_name": ["EuroParl"]}): 0.0043,
+                MixtureKey({"pile_set_name": ["HackerNews"]}): 0.0075,
+                MixtureKey({"pile_set_name": ["YoutubeSubtitles"]}): 0.0042,
+                MixtureKey({"pile_set_name": ["PhilPapers"]}): 0.0027,
+                MixtureKey({"pile_set_name": ["NIH ExPorter"]}): 0.0052,
+                MixtureKey({"pile_set_name": ["Enron Emails"]}): 0.0030,
             })
     
     ado_log_dir = f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog"
-    if not os.path.exists(ado_log_dir):
+    if torch.distributed.get_rank() == 0 and not os.path.exists(ado_log_dir):
         os.mkdir(ado_log_dir)
+    torch.distributed.barrier()
         
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "22"
+    job_id = "Megatron-mixtera" + "1"
     
 
     mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   

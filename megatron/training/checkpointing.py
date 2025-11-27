@@ -800,7 +800,6 @@ def generate_state_dict(args, model, optimizer, opt_param_scheduler,
         key = "model"
         if len(model) > 1:
             key = f"model{i}"
-
         if args.ckpt_format == "torch_dist":
             model_sd = model[i].sharded_state_dict(**(model_sd_kwargs or {}))
         else:   # torch, torch_dcp, fsdp_dtensor
