@@ -9,6 +9,8 @@
 #SBATCH --account=a-infra02
 #SBATCH --time=00:59:00
 
+set -e
+
 export NCCL_NET="AWS Libfabric"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
