@@ -3,6 +3,7 @@
 """Pretrain and SFT GPT."""
 
 import torch
+from torch.distributed.elastic.multiprocessing.errors import record
 
 from functools import partial
 from typing import List, Optional, Tuple
@@ -173,6 +174,8 @@ def loss_func(
             per_domain_loss_module = PerDomainLoss(device=torch.cuda.current_device())
         per_domain_loss_module(output_tensor, key_ids)
         pp_tp_group = parallel_state.get_data_parallel_group()  # should be all last stage of pp in all dp groups
+        # print(f"[Rank {torch.distributed.get_rank()}]", parallel_state._DATA_PARALLEL_GLOBAL_RANKS)
+        # print(f"[Rank {torch.distributed.get_rank()}]", pp_tp_group)
         with torch.no_grad():
             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
             max_handle = torch.distributed.all_reduce(max_id_tensor, op=torch.distributed.ReduceOp.MAX, async_op=True, group=pp_tp_group) # TODO: dp mesh vs dp group?
@@ -257,7 +260,7 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
     with stimer(bdata=True):
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
         tokens, labels, loss_mask, attention_mask, position_ids, key_ids = get_batch(data_iterator, vp_stage)
-        print(f"[Rank {torch.distributed.get_rank()}] obtained batch at iteration {iteration}")
+        # print(f"[Rank {torch.distributed.get_rank()}] obtained batch at iteration {iteration}, {tokens.shape}, {labels.shape if hasattr(labels, "shape") else None}, {loss_mask.shape if hasattr(loss_mask, "shape") else None}, {attention_mask.shape}, {position_ids.shape}")
     timers('batch-generator').stop()
     with stimer:
         if args.use_legacy_models:
@@ -453,7 +456,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = "172.28.37.80"
+    server_host = '172.28.52.239'
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -560,28 +563,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     
     valid_ds = None
     test_ds = None
-    
-    # valid_jobid = job_id + "_valid"
-    # valid_rand = torch.randint(1, 1000, (1,)).cuda()
-    # torch.distributed.broadcast(valid_rand, src=0)
-    # valid_jobid += str(valid_rand.item())
-    # rsa_valid = ResultStreamingArgs(job_id=valid_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
-    #                          chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
-    #                          chunk_reading_mixture_type="token", 
-    #                          chunk_reading_sequence_len=seq_len,
-    #                          chunk_reading_eos=True)
-    # query_valid = Query.for_job(valid_jobid).select(None)
-    # valid_ds = MixteraWrapper(MixteraTorchDataset(client, query_valid, qea, rsa_valid, return_key_id=return_key_id))  
-    
-    # test_jobid = job_id + "_test"
-    # rsa_test = ResultStreamingArgs(job_id=test_jobid, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=True,
-    #                          chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
-    #                          chunk_reading_mixture_type="token", 
-    #                          chunk_reading_sequence_len=4096,
-    #                          chunk_reading_eos=True)
-    # query_test = Query.for_job(test_jobid).select(("redpajama_set_name", "==", "RedPajamaC4"))
-    # test_ds = MixteraWrapper(MixteraTorchDataset(client, query_test, qea, rsa_test), return_key_id=return_key_id)  
-    
+
     return train_ds, valid_ds, test_ds
 
 

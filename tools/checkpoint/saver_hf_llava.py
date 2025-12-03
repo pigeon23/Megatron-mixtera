@@ -325,20 +325,19 @@ class HFCheckpointSaverLLaVA:
         schema.set(self.state_dict, params_dict)
 
     def receive_model(self):
-        vision_model_prefix = "vision_model.vision_model."
-        vision_layer_prefix = "encoder.layers"
-        if self.md.vision_model_type == "radio":
-            vision_model_prefix = "vision_model.radio_model."
-            vision_layer_prefix = "model.blocks"
-        vision_schema = get_vision_model_schema(
-            self.md.vision_model_type,
-            prefix=vision_model_prefix,
-            layer_prefix=vision_layer_prefix,
-            use_swiglu=self.md.vision_swiglu,
-        )
-        self.receive_vision_backbone(vision_schema)
-
-        self.receive_vision_projection()
+        # vision_model_prefix = "vision_model.vision_model."
+        # vision_layer_prefix = "encoder.layers"
+        # if self.md.vision_model_type == "radio":
+        #     vision_model_prefix = "vision_model.radio_model."
+        #     vision_layer_prefix = "model.blocks"
+        # vision_schema = get_vision_model_schema(
+        #     self.md.vision_model_type,
+        #     prefix=vision_model_prefix,
+        #     layer_prefix=vision_layer_prefix,
+        #     use_swiglu=self.md.vision_swiglu,
+        # )
+        # self.receive_vision_backbone(vision_schema)
+        # self.receive_vision_projection()
 
         language_model_prefix = "language_model."
         language_layer_prefix = "model.layers"

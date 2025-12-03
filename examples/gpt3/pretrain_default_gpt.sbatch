@@ -19,6 +19,8 @@
 # export OMP_NUM_THREADS=64
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_NET="AWS Libfabric"
+export TORCH_NCCL_TRACE_BUFFER_SIZE=20000
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
 pip install megatron-core
@@ -67,6 +69,15 @@ GPT_MODEL_ARGS=(
     --max-position-embeddings 2048 
     --attention-backend auto # Can use (flash/fused/unfused/local)
     # --untie-embeddings-and-output-weights
+    # --normalization RMSNorm
+    # --swiglu
+    # --attention-dropout 0
+    # --hidden-dropout 0
+    # # --no-bias-swiglu-fusion
+    # # --no-bias-dropout-fusion
+    # --position-embedding-type rope
+    # --untie-embeddings-and-output-weights
+    # --disable-bias-linear
 )
 
 TRAINING_ARGS=(
@@ -94,7 +105,7 @@ TRAINING_ARGS=(
 )
 
 MODEL_PARALLEL_ARGS=(
-	--tensor-model-parallel-size 1
+	--tensor-model-parallel-size 2
 	--pipeline-model-parallel-size 1
     --distributed-timeout-minutes 30
 )

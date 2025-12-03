@@ -129,8 +129,6 @@ class OptimizerParamScheduler:
         max_lr = param_group.get('max_lr', self.max_lr)
         min_lr = param_group.get('min_lr', self.min_lr)
         
-        print(f"Getting LR at step {self.num_steps}: max_lr={max_lr}, min_lr={min_lr}, warmup={self.lr_warmup_steps}, decay_style={self.lr_decay_style}, decay_steps={self.lr_decay_steps}", flush=True)
-
         # Use linear warmup for the initial part.
         if self.lr_warmup_steps > 0 and self.num_steps <= self.lr_warmup_steps:
             return self.init_lr + (

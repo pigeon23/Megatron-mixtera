@@ -6,7 +6,7 @@ import torch
 
 from functools import partial
 
-from tools.checkpoint.utils import _ConverterFakeProcessGroup
+from utils import _ConverterFakeProcessGroup
 
 
 def add_arguments(parser):
@@ -15,10 +15,10 @@ def add_arguments(parser):
     group.add_argument('--megatron-path', type=str, default=None,
                        help='Base directory of Megatron repository')
 
-    group.add_argument('--target-tensor-parallel-size', type=int,
+    group.add_argument('--target-tensor-parallel-size', type=int, default=1,
                        help='Target tensor model parallel size, defaults to the tensor parallel size '
                             'in the input checkpoint if provided by the loader, otherwise to 1')
-    group.add_argument('--target-pipeline-parallel-size', type=int,
+    group.add_argument('--target-pipeline-parallel-size', type=int, default=1,
                        help='Target tensor model parallel size, default to the pipeline parall size '
                        'in the input checkpoint if provided by the loader, otherwise to 1')
     group.add_argument('--saver-transformer-impl', default='local',

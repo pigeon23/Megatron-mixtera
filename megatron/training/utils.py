@@ -539,10 +539,10 @@ def get_batch_on_this_tp_rank(data_iterator):
         if args.pipeline_model_parallel_size == 1:
             _broadcast(batch['tokens'])
             _broadcast(batch['labels'])
+            _broadcast(batch['key_ids'])
             _broadcast(batch['loss_mask'])
             _broadcast(batch['attention_mask'])
             _broadcast(batch['position_ids'])
-            _broadcast(batch['key_ids'])
 
         elif mpu.is_pipeline_first_stage():
             _broadcast(batch['tokens'])

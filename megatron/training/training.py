@@ -522,7 +522,9 @@ def preprocess_common_state_dict(common_state_dict):
 
     return preprocessed_common_state_dict
 
+from torch.distributed.elastic.multiprocessing.errors import record
 
+@record
 def pretrain(
     train_valid_test_dataset_provider,
     model_provider,
@@ -1326,10 +1328,8 @@ def train_step(iteration, forward_step_func, data_iterator, model, optimizer, op
         unwrapped_model.update_momentum(args.curr_iteration)
 
     # Update learning rate.
-    print(f"Update successful: {update_successful}")
     if update_successful:
         increment = get_num_microbatches() * args.micro_batch_size * args.data_parallel_size
-        print(f"Incrementing LR scheduler by {increment} steps")
         opt_param_scheduler.step(increment=increment)
         skipped_iter = 0
     else:

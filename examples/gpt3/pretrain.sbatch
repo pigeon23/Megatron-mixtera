@@ -6,19 +6,52 @@
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=8
+#SBATCH --nodes=16
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
+# CUDA_LAUNCH_BLOCKING=1 
+# TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+# decorating main function with: from torch.distributed.elastic.multiprocessing.errors import record
+
+# # Set maximum stack size to unlimited
+# ulimit -s unlimited
+# # Set max number of open file descriptors to a high value
+# ulimit -n 65536
+# Allow core dumps for post-mortem debugging
+ulimit -c 0
+
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1 
+export TRITON_HOME=/dev/shm/ 
+
+export CUDA_CACHE_DISABLE=1 
 
 # export LOGLEVEL=DEBUG
-# export PYTHONFAULTHANDLER=1
-# export NCCL_DEBUG=WARN
-# export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
-# export CUDA_LAUNCH_BLOCKING=0
-# export OMP_NUM_THREADS=64
-# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONFAULTHANDLER=1
+export NCCL_DEBUG=WARN
+export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
+export CUDA_LAUNCH_BLOCKING=0
+export OMP_NUM_THREADS=64
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_NET="AWS Libfabric"
+
+export NCCL_NET_GDR_LEVEL=PHB
+export NCCL_CROSS_NIC=1
+export NCCL_PROTO=^LL128
+export FI_CXI_DEFAULT_CQ_SIZE=131072
+export FI_CXI_DEFAULT_TX_SIZE=16384
+export FI_CXI_DISABLE_HOST_REGISTER=1
+export FI_CXI_RX_MATCH_MODE=software
+export FI_MR_CACHE_MONITOR=userfaultfd
+export NCCL_NCHANNELS_PER_NET_PEER=4
+
+
+export FI_EFA_FORK_SAFE=1
+export NCCL_IB_TIMEOUT=22         # Increases retry timeout significantly
+export TORCH_DISTRIBUTED_TIMEOUT=5400 # 90 minutes
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_RETRY_CNT=7
 
 pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
 pip install megatron-core
@@ -34,7 +67,7 @@ export MASTER_ADDR=$(scontrol show hostname "$SLURM_NODELIST" | head -n1)
 export MASTER_PORT=1234   # Choose an unused port
 export WORLD_SIZE=$(( SLURM_NNODES * SLURM_NTASKS_PER_NODE ))
 
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+# export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 GPUS_PER_NODE=4
 # Change for multinode config
@@ -65,7 +98,7 @@ GPT_MODEL_ARGS=(
     --num-attention-heads 16
     --seq-length 2048 
     --max-position-embeddings 2048 
-    --attention-backend auto # Can use (flash/fused/unfused/local)
+    --attention-backend flash # Can use (flash/fused/unfused/local)
     --normalization RMSNorm
     --swiglu
     --attention-dropout 0
@@ -78,7 +111,7 @@ GPT_MODEL_ARGS=(
 )
 
 TRAINING_ARGS=(
-    --micro-batch-size 8
+    --micro-batch-size 32
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
     --train-iters 30000
@@ -99,12 +132,23 @@ TRAINING_ARGS=(
     # --min-lr 6.0e-6
     # --lr-warmup-fraction .001 
     # --lr-decay-iters 430000 
+    # --optimizer-cpu-offload
+    # --use-precision-aware-optimizer
+    # --use-distributed-optimizer
+    # --main-grads-dtype bf16
+    # --exp-avg-dtype bf16
+    # --exp-avg-sq-dtype bf16
 )
 
 MODEL_PARALLEL_ARGS=(
 	--tensor-model-parallel-size 1
 	--pipeline-model-parallel-size 1
+    # --use-torch-fsdp2
+    # --no-gradient-accumulation-fusion
     --distributed-timeout-minutes 30
+    --recompute-granularity full
+    --recompute-method uniform
+    --recompute-num-layers 6
 )
 
 DATA_ARGS=(

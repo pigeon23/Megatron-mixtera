@@ -6,7 +6,7 @@ import torch
 
 try:
     from torch.distributed import DeviceMesh
-    from torch.distributed.fsdp import fully_shard
+    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
 
     HAVE_FSDP = True
 except ImportError:
@@ -79,10 +79,13 @@ class TorchFullyShardedDataParallel(_BaseDataParallel):
             self.process_group = process_group
 
         self.device_mesh = DeviceMesh.from_group(self.process_group, "cuda")
+        mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
         kwargs = {
             "mesh": self.device_mesh,
+            "mp_policy": mp_policy,
             "reshard_after_forward": getattr(ddp_config, "reshard_after_forward", True),
         }
+        print(kwargs)
 
         self.ddp_config = ddp_config
 
