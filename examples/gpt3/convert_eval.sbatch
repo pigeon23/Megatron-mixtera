@@ -9,15 +9,16 @@
 #SBATCH --account=a-infra02
 #SBATCH --time=00:59:00
 
-set -e
+set -ex
 
 export NCCL_NET="AWS Libfabric"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
+# pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
 pip install megatron-core
 pip install --no-build-isolation transformer-engine[pytorch]
 
-LOAD_DIR="/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt" 
+LOAD_DIR="/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments//ckpt" 
 SAVE_DIR="$LOAD_DIR/../ckpt-converted" 
 
 ITER_PATH="$LOAD_DIR/latest_checkpointed_iteration.txt"
@@ -27,17 +28,17 @@ ITER=$(printf %07d $ITER)
 
 echo $ITER
 
-pip install transformers==4.46.3
-cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/tools/checkpoint
-
-torchrun --nproc_per_node 1 --nnodes 1 --master_addr localhost --master_port 1234 \
-     --node_rank 0  convert.py --model-type GPT --loader mcore --saver legacy \
-     --load-dir $LOAD_DIR \
-     --save-dir $SAVE_DIR \
-     --megatron-path /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
-
-pip uninstall --yes transformers
-pip install transformers
+# pip install transformers==4.46.3
+# cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/tools/checkpoint
+# 
+# torchrun --nproc_per_node 1 --nnodes 1 --master_addr localhost --master_port 1234 \
+#      --node_rank 0  convert.py --model-type GPT --loader mcore --saver legacy \
+#      --load-dir $LOAD_DIR \
+#      --save-dir $SAVE_DIR \
+#      --megatron-path /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
+# 
+# pip uninstall --yes transformers
+# pip install transformers
 
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
@@ -49,4 +50,5 @@ python convert_megatron_to_huggingface.py \
 
 python eval_lmeval.py \
     --checkpoint-dir "$SAVE_DIR/iter_$ITER/huggingface_model" \
-    --output-dir "$SAVE_DIR/iter_$ITER/huggingface_eval"
+    --output-dir "$SAVE_DIR/iter_$ITER/huggingface_eval" \
+    --tasks "lambada_openai,hellaswag,openbookqa,arc_easy"

@@ -67,9 +67,7 @@ def build_pretraining_data_loader(dataset, consumed_samples):
         
         return torch.utils.data.DataLoader(dataset,
                                            batch_size=args.micro_batch_size,
-                                           num_workers=args.num_workers,
-                                           pin_memory=True,
-                                           persistent_workers=True if args.num_workers > 0 else False,
+                                           num_workers=args.num_workers
                                            )
     elif args.dataloader_type == "external":
         # External dataloaders are passed through. User is expected to provide a

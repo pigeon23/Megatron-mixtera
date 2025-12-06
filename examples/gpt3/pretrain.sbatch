@@ -6,7 +6,7 @@
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=16
+#SBATCH --nodes=32
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
@@ -53,14 +53,10 @@ export TORCH_DISTRIBUTED_TIMEOUT=5400 # 90 minutes
 export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_IB_RETRY_CNT=7
 
-pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
-pip install megatron-core
-pip install --no-build-isolation transformer-engine[pytorch]
-
 rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt
 rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/tensorboard
 rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog
-pushd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
+cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
 
 export MASTER_ADDR=$(scontrol show hostname "$SLURM_NODELIST" | head -n1)  
@@ -92,14 +88,18 @@ DISTRIBUTED_ARGS=(
 )
 
 GPT_MODEL_ARGS=(
-    --num-layers 24 
-    --hidden-size 2048
-    --ffn-hidden-size 5464
-    --num-attention-heads 16
+    --num-layers 28 
+    --hidden-size 3072
+    --ffn-hidden-size 8192
+    --num-attention-heads 24
+    --group-query-attention
+    --num-query-groups 8
+    --kv-channels 128
     --seq-length 2048 
     --max-position-embeddings 2048 
     --attention-backend flash # Can use (flash/fused/unfused/local)
     --normalization RMSNorm
+    --rotary-base 500000
     --swiglu
     --attention-dropout 0
     --hidden-dropout 0
@@ -111,7 +111,7 @@ GPT_MODEL_ARGS=(
 )
 
 TRAINING_ARGS=(
-    --micro-batch-size 32
+    --micro-batch-size 16
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
     --train-iters 30000
@@ -148,7 +148,7 @@ MODEL_PARALLEL_ARGS=(
     --distributed-timeout-minutes 30
     --recompute-granularity full
     --recompute-method uniform
-    --recompute-num-layers 6
+    --recompute-num-layers 4
 )
 
 DATA_ARGS=(
@@ -157,7 +157,7 @@ DATA_ARGS=(
     --merge-file $MERGE_FILE 
     --split 949,50,1
     --dataloader-type mixtera # mixtera
-    --num-workers 0
+    --num-workers 4
 )
 
 EVAL_AND_LOGGING_ARGS=(
@@ -170,6 +170,8 @@ EVAL_AND_LOGGING_ARGS=(
     --tensorboard-dir $TENSORBOARD_LOGS_PATH 
     --record-memory-history
     --log-memory-to-tensorboard
+    --log-timers-to-tensorboard
+    --log-throughput
 )
 
 echo "[sbatch-master] running on $(hostname)"
@@ -185,6 +187,10 @@ echo \"[srun] rank=\$SLURM_PROCID host=\$(hostname) noderank=\$SLURM_NODEID loca
 
 export node_rank=\$SLURM_NODEID
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
+
+pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
+pip install megatron-core
+pip install --no-build-isolation transformer-engine[pytorch]
 
 torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "${GPT_MODEL_ARGS[@]}" \

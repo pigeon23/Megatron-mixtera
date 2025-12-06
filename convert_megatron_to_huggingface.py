@@ -348,6 +348,7 @@ def infer_config_from_checkpoint(state_dict: Dict[str, Any], ffn_hidden_size: in
 
 def to_huggingface(states: Dict[str, Any], config: Dict):
     # step 1: create a config file containing the model architecture
+    print(config)
     hf_config = LlamaConfig(
         vocab_size=config["vocab_size"],
         hidden_size=config["hidden_size"],
@@ -386,12 +387,18 @@ def to_huggingface(states: Dict[str, Any], config: Dict):
             qkv = states_dicts[f"layers.{i}.self_attention.query_key_value.weight"]
             
             input_shape = qkv.size()
-            saved_shape = (hf_config.num_attention_heads, 3, dims_per_head) + input_shape[1:]
+            saved_shape = (hf_config.num_key_value_heads, (hf_config.num_attention_heads//hf_config.num_key_value_heads+2), dims_per_head) + input_shape[1:]
             qkv = qkv.view(*saved_shape)
-            qkv = qkv.transpose(0, 1).contiguous()
-            qkv = qkv.view(*input_shape)
             
-            q, k, v = torch.chunk(qkv, chunks=3, dim=0)
+            split_size_or_sections = [hf_config.num_attention_heads//hf_config.num_key_value_heads, 1, 1]
+            
+            q, k, v = torch.split(qkv, split_size_or_sections=split_size_or_sections, dim=1)
+            
+            q = q.contiguous().view((-1, input_shape[-1]))
+            k = k.contiguous().view((-1, input_shape[-1]))
+            v = v.contiguous().view((-1, input_shape[-1]))
+            
+            # q, k, v = torch.chunk(qkv, chunks=3, dim=0)
             new_state_dict[f"model.layers.{i}.self_attn.q_proj.weight"] = q.contiguous()
             new_state_dict[f"model.layers.{i}.self_attn.k_proj.weight"] = k.contiguous()
             new_state_dict[f"model.layers.{i}.self_attn.v_proj.weight"] = v.contiguous()
@@ -479,6 +486,7 @@ def main():
         args.n_heads = int(ds_args.num_attention_heads)
         args.rope_theta = int(ds_args.rotary_base)
         args.ffn_hidden_size = int(ds_args.ffn_hidden_size)
+        args.n_kv_heads = int(ds_args.num_query_groups) if bool(ds_args.group_query_attention) else args.n_heads
         config = infer_config_from_checkpoint(input_state_dict, args.ffn_hidden_size, args.max_seq_len, args.n_kv_heads, args.n_heads, args.rope_theta)
     else:
         config = LlamaConfig.from_json_file(args.config_file)

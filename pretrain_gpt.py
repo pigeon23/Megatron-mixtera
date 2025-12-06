@@ -456,7 +456,7 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = '172.28.52.239'
+    server_host = '172.28.42.28'
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
     # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
@@ -521,7 +521,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     torch.distributed.barrier()
         
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "1"
+    job_id = "Megatron-mixtera" + "5"
     
 
     mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
