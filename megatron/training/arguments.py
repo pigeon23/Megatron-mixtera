@@ -91,48 +91,48 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
 def add_mixtera_arguments(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="mixtera")
     group.add_argument(
-            "--mixtera.ip",
+            "--mixtera-ip",
             type=str,
             default="127.0.0.1",
             help="ip of mixtera server",
         )
     group.add_argument(
-            "--mixtera.port",
+            "--mixtera-port",
             type=int,
             default=8080,
             help="port of mixtera server",
         )
     group.add_argument(
-            "--mixtera.vocab_size",
+            "--mixtera-vocab-size",
             type=int,
             default=-1,
             help="vocab size of model",
         )
     group.add_argument(
-            "--mixtera.job_id",
+            "--mixtera-job-id",
             type=str,
             default="torchtitan job",
             help="job name for the server",
         )
     group.add_argument(
-            "--mixtera.chunk_size",
+            "--mixtera-chunk-size",
             type=int,
             default=512,
             help="chunk size",
         )
     group.add_argument(
-            "--mixtera.tunnel_via_server",
+            "--mixtera-tunnel-via-server",
             action="store_true",
             help="Whether to tunnel the data via the server.",
         )
     group.add_argument(
-            "--mixtera.chunk_reading_degree_of_parallelism",
+            "--mixtera-chunk-reading-degree-of-parallelism",
             type=int,
             default=1,
             help="chunk_reading_degree_of_parallelism",
         )
     group.add_argument(
-            "--mixtera.pile",
+            "--mixtera-pile",
             type=str,
             default="default",
             choices=["ado", "default", "natural"],

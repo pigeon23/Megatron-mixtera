@@ -31,18 +31,17 @@ from megatron.core.datasets.gpt_dataset import _get_ltor_masks_and_position_ids
 
 from typing import Any, Optional
 import os
-
+import time
 
 from mixtera.torch import MixteraTorchDataset
 from mixtera.core.client import MixteraClient, QueryExecutionArgs, ResultStreamingArgs
 from mixtera.core.query import Query
-from mixtera.core.query.mixture import InferringMixture, StaticMixture, MixtureKey
+from mixtera.core.query.mixture import StaticMixture, MixtureKey
 from mixtera.core.query.mixture.dynamic_mixture import DynamicMixture
 from mixtera.core.algo.ado.ado import AdoDynamicMixing
 from mixtera.utils.feedback import handle_mixtera_feedback
-from mixtera.utils.checkpoint import handle_mixtera_checkpoint
+from mixtera.core.datacollection.datasets import JSONLDataset
 
-from time import time
 from pathlib import Path
 
 try:
@@ -54,6 +53,7 @@ except ImportError:
     has_nvidia_modelopt = False
 
 stimer = StragglerDetector()
+USING_KEYIDS = False
 
 def get_batch(data_iterator, vp_stage=None):
     """Generate a batch."""
@@ -138,6 +138,8 @@ class PerDomainLoss(torch.nn.Module):
 
 per_domain_loss_module = None
 
+feed_back_time_accumulator = 0.0
+wait_time_accumulator = 0.0
 
 def loss_func(
     loss_mask: torch.Tensor, output_tensor: torch.Tensor, model: Optional[GPTModel] = None, key_ids: Optional[torch.Tensor] = None, train_data_loader: Optional[torch.utils.data.DataLoader] = None, iteration: Optional[int] = None
@@ -156,6 +158,7 @@ def loss_func(
             the data parallel ranks
     """
     args = get_args()
+    timers = get_timers()
     
     # print(f"[Rank {torch.distributed.get_rank()}] loss func output tensor of shape {output_tensor.shape}, output tensor: {output_tensor}")
 
@@ -176,6 +179,7 @@ def loss_func(
         pp_tp_group = parallel_state.get_data_parallel_group()  # should be all last stage of pp in all dp groups
         # print(f"[Rank {torch.distributed.get_rank()}]", parallel_state._DATA_PARALLEL_GLOBAL_RANKS)
         # print(f"[Rank {torch.distributed.get_rank()}]", pp_tp_group)
+        init_async_start = time.perf_counter()
         with torch.no_grad():
             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
             max_handle = torch.distributed.all_reduce(max_id_tensor, op=torch.distributed.ReduceOp.MAX, async_op=True, group=pp_tp_group) # TODO: dp mesh vs dp group?
@@ -191,12 +195,18 @@ def loss_func(
                     [counts_tensor, torch.zeros(new_size, dtype=counts_tensor.dtype, device=counts_tensor.device)], dim=0)
             handle_losses = torch.distributed.all_reduce(losses_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=pp_tp_group)
             handle_counts = torch.distributed.all_reduce(counts_tensor, op=torch.distributed.ReduceOp.SUM, async_op=True, group=pp_tp_group)
-            handle_losses.wait()
-            handle_counts.wait()
-        
+        init_async_time = time.perf_counter() - init_async_start
+        wait_mixtera_start = time.perf_counter()
+        handle_losses.wait()
+        handle_counts.wait()
+        wait_mixtera_time = time.perf_counter() - wait_mixtera_start
+        global wait_time_accumulator
+        wait_time_accumulator += wait_mixtera_time
         # print(f"[Rank {torch.distributed.get_rank()}] [Iteration {iteration}] handle mixtera feedback ")
         dp_rank = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
         tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        mixtera_feedback_start = time.perf_counter()
+        timers('mixtera-feedback', log_level=2).start()
         handle_mixtera_feedback(
             train_data_loader,
             iteration,
@@ -205,6 +215,16 @@ def loss_func(
             dp_rank,
             tp_rank,
         )
+        timers('mixtera-feedback').stop()
+        mixtera_feedback_time = time.perf_counter() - mixtera_feedback_start
+        global feed_back_time_accumulator
+        feed_back_time_accumulator += mixtera_feedback_time
+        
+        # if iteration % args.log_interval == (args.log_interval - 1) and torch.distributed.get_rank() == 0:
+        #     print(f"mixtera average feedback time {feed_back_time_accumulator/args.log_interval:.4f}s")
+        #     print(f"mixtera average wait time {wait_time_accumulator/args.log_interval:.4f}s")
+        #     feed_back_time_accumulator = 0.0
+        #     wait_time_accumulator = 0.0
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
     rerun_state_machine = get_rerun_state_machine()
@@ -348,54 +368,6 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
 
     return train_ds, valid_ds, test_ds
 
-from mixtera.core.datacollection.index.parser import MetadataParser
-from mixtera.core.datacollection.index.parser.metadata_parser import MetadataProperty
-from mixtera.core.client.mixtera_client import QueryExecutionArgs, ResultStreamingArgs
-from mixtera.core.datacollection.datasets import JSONLDataset
-from mixtera.core.datacollection.index.parser import MetadataParser
-from mixtera.core.datacollection.index.parser.metadata_parser import MetadataProperty
-from mixtera.core.query import Query
-from mixtera.core.query.mixture import ArbitraryMixture, Mixture
-from mixtera.torch import MixteraTorchDataset
-
-class TestMetadataParser(MetadataParser):
-    @classmethod
-    def get_properties(cls) -> list[MetadataProperty]:
-        return [
-            MetadataProperty(
-                name="language",
-                dtype="ENUM",
-                multiple=False,
-                nullable=False,
-                enum_options={"JavaScript", "HTML"},
-            ),
-            MetadataProperty(
-                name="license",
-                dtype="STRING",
-                multiple=False,
-                nullable=False,
-                enum_options={"CC", "MIT"},
-            ),  # Could be ENUM but we are using string to test
-            MetadataProperty(
-                name="doublelanguage",
-                dtype="ENUM",
-                multiple=True,
-                nullable=False,
-                enum_options={"JavaScript", "HTML"},
-            ),
-        ]
-
-    def parse(
-        self, line_number: int, payload: Any, **kwargs: Optional[dict[Any, Any]]
-    ) -> None:
-        metadata = payload["meta"]
-        self.add_metadata(
-            sample_id=line_number,
-            language=metadata["language"],
-            license=metadata["license"],
-            doublelanguage=[metadata["language"], metadata["language"]],
-        )
-
 def parsing_func(sample):
     import json
 
@@ -456,19 +428,9 @@ class MixteraWrapper(torch.utils.data.IterableDataset):
 def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     args = get_args()
     
-    server_host = '172.28.42.28'
+    server_host = args.mixtera_ip # '172.28.41.32'
     server_port = 8088
     client = MixteraClient.from_remote(server_host, server_port)
-    # client.register_metadata_parser("TEST_PARSER", TestMetadataParser)
-    # 
-    # if not client.register_dataset(
-    #         "server_integrationtest_dataset_megatron_1",
-    #         Path("/iopsstor/scratch/cscs/yiswang/tmp") / "testd.jsonl",
-    #         JSONLDataset,
-    #         parsing_func,
-    #         "TEST_PARSER",
-    #     ):
-    #     print("Dataset already registered.")
         
     if torch.distributed.get_rank() == 0 and not client.register_dataset(
             "pile",
@@ -480,15 +442,8 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
         ):
         print("already registered dataset")
     torch.distributed.barrier()
-    chunk_size = 512
+    chunk_size = args.mixtera_chunk_size
     seq_len = args.seq_length
-    
-    # mixture = InferringMixture(chunk_size=chunk_size) # always use strict = True for all if using inferring mixture
-    
-    # mixture_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
-    #             MixtureKey({"redpajama_set_name": ["RedPajamaArXiv"]}): 0.4,
-    #             MixtureKey({"redpajama_set_name": ["RedPajamaCommonCrawl"]}): 0.6
-    #             })
     
     mixture_static = StaticMixture(chunk_size=chunk_size, strict=False, mixture={
                 MixtureKey({"pile_set_name": ["Pile-CC"]}): 0.1121,
@@ -521,8 +476,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     torch.distributed.barrier()
         
     num_workers = args.num_workers
-    job_id = "Megatron-mixtera" + "5"
-    
+    job_id = args.mixtera_job_id    
 
     mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
     
@@ -545,9 +499,11 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     qea = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
     # TODO set tunnel_via_server to False 
     rsa = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=False, # set tunnel_via_server to False 
+                             chunk_reading_degree_of_parallelism=1,
                              chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
                              chunk_reading_mixture_type="token", 
                              chunk_reading_sequence_len=seq_len,
+                             chunk_reading_token_overlapping=False, 
                              chunk_reading_eos=True)
     # using eos, require extra process with built-in method: _get_ltor_masks_and_position_ids
     # bos and eos token id: 50256
@@ -556,6 +512,8 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
         load_path = None
         
     return_key_id = isinstance(mixture, DynamicMixture) # not the best criterion to decide this on, but suffices for now.
+    global USING_KEYIDS
+    USING_KEYIDS = return_key_id
         
     mixtera_ds = MixteraTorchDataset(client, query, qea, rsa, checkpoint_path=load_path, return_key_id=return_key_id)
     

@@ -842,6 +842,8 @@ def pretrain(
 
     ft_integration.shutdown()
     one_logger_utils.finish()
+    
+    destroy_global_state()
 
 
 def update_train_iters(args):
@@ -1459,6 +1461,7 @@ def training_log(
         'optimizer-inner-step',
         'optimizer-copy-main-to-model-params',
         'optimizer',
+        'mixtera-feedback',
     ]
     # Add timers from RL loop if needed.
     if getattr(args, 'perform_rl_step', False):
@@ -1894,7 +1897,7 @@ def checkpoint_and_decide_exit(
             dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
             node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
             torch.distributed.barrier()
-            print(f"Rank [{torch.distributed.get_rank()}] saves checkpoint at iteration {iteration}", flush=True)
+            # print(f"Rank [{torch.distributed.get_rank()}] saves checkpoint at iteration {iteration}", flush=True)
             handle_mixtera_checkpoint(train_data_loader, args.save, dp_group_id, node_id, False)
 
     elif (

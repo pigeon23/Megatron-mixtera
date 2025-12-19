@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 # --- Configuration ---
 # Define the base directory where the checkpoint folders are located
-SETTING = "1B-default"
+SETTING = "1B-default-ADO"
 BASE_DIR = f"experiments/{SETTING}/ckpt-converted"
 
 # Define the range and step for iteration folders
@@ -22,7 +22,7 @@ METRICS_TO_PLOT = [
 ]
 # ---------------------
 
-def find_results_file_path(base_dir, depth=3):
+def find_results_file_path(base_dir, depth=1):
     """
     Dynamically finds the full path to the *single* result file by traversing a 
     fixed number of sub-directories (depth), assuming exactly one item at each level.
@@ -43,7 +43,7 @@ def find_results_file_path(base_dir, depth=3):
             
         # Check the guarantee: exactly one item inside
         if len(contents) != 1:
-            print(f"  [WARNING] Level {level} structure error: Expected exactly one item in '{current_path}', found {len(contents)}. Aborting search.")
+            print(f"[WARNING] Level {level} structure error: Expected exactly one item in '{current_path}', found {len(contents)}. Aborting search.")
             return None
             
         # Move down to the next directory
@@ -57,7 +57,7 @@ def find_results_file_path(base_dir, depth=3):
 
     # Check the guarantee: exactly one item inside the final directory
     if len(final_contents) != 1:
-        print(f"  [WARNING] Final directory structure error: Expected exactly one file/folder in '{current_path}', found {len(final_contents)}. Aborting search.")
+        print(f"[WARNING] Final directory structure error: Expected exactly one file/folder in '{current_path}', found {len(final_contents)}. Aborting search.")
         return None
     
     # The name of the single file is the only item in final_contents
@@ -69,7 +69,7 @@ def find_results_file_path(base_dir, depth=3):
         # We assume this is the required JSON file, even if the name varies
         return file_path
     else:
-        print(f"  [ERROR] Final path '{file_path}' is not a file.")
+        print(f"[ERROR] Final path '{file_path}' is not a file.")
         return None
 
 
@@ -82,7 +82,7 @@ def load_and_plot_evaluation_results():
     iterations = []
     
     # Inform the user about the expected structure based on their clarification
-    print(f"Searching for results in: {BASE_DIR}/iter_000****/huggingface_eval/fewshot_0/results/<L1>/<L2>/<L3>/<filename.json>")
+    print(f"Searching for results in: {BASE_DIR}/iter_000****/huggingface_eval/fewshot_0/results/<L1>/<filename.json>")
 
     # Generate the list of iteration numbers
     for iteration in range(START_ITER, END_ITER + STEP, STEP):
@@ -95,15 +95,15 @@ def load_and_plot_evaluation_results():
         print(f"Checking evaluation directory: {eval_dir}")
 
         if not os.path.exists(eval_dir):
-            print(f"  [ERROR] Evaluation directory not found: {eval_dir}. Skipping.")
+            print(f"[ERROR] Evaluation directory not found: {eval_dir}. Skipping.")
             continue
             
         # Find the full path using the new helper function
-        # Note: We no longer pass a filename, as it's discovered dynamically
+        # Note: The depth is now set to 1, matching the required directory structure L1/<filename.json>
         file_path = find_results_file_path(eval_dir, depth=1)
         
         if not file_path:
-            print(f"  [ERROR] Could not find results file for iteration {iteration}. Skipping.")
+            print(f"[ERROR] Could not find results file for iteration {iteration}. Skipping.")
             continue
             
         print(f"Attempting to read file: {file_path}")
@@ -115,7 +115,7 @@ def load_and_plot_evaluation_results():
                 # Check if all required metrics exist in the JSON
                 missing_metrics = [m for m in METRICS_TO_PLOT if m not in results]
                 if missing_metrics:
-                    print(f"  [WARNING] Results file is missing metrics: {missing_metrics}. Skipping.")
+                    print(f"[WARNING] Results file is missing metrics: {missing_metrics}. Skipping.")
                     continue
                     
                 # Store the data
@@ -123,12 +123,12 @@ def load_and_plot_evaluation_results():
                 for metric in METRICS_TO_PLOT:
                     all_data[metric].append(results[metric]["acc,none"])
                 
-                print(f"  [SUCCESS] Data loaded for iteration {iteration}.")
+                print(f"[SUCCESS] Data loaded for iteration {iteration}.")
                 
         except json.JSONDecodeError:
-            print(f"  [ERROR] Failed to decode JSON from {file_path}. Skipping.")
+            print(f"[ERROR] Failed to decode JSON from {file_path}. Skipping.")
         except Exception as e:
-            print(f"  [ERROR] An unexpected error occurred: {e}. Skipping.")
+            print(f"[ERROR] An unexpected error occurred: {e}. Skipping.")
 
 
     if not iterations:
@@ -144,20 +144,38 @@ def load_and_plot_evaluation_results():
     colors = plt.cm.get_cmap('Dark2', len(METRICS_TO_PLOT))
 
     # Use a counter to assign different colors/axes to metrics
-    line_styles = ['-o', '--s']  # Solid lines for main axis, dashed for secondary if used
+    line_styles = ['-o', '--s', '-^'] # Solid lines, dashed, different markers
     
-    # Plot all metrics on the primary y-axis (ax1) for simplicity
     print("\nStarting plot generation...")
     
     for i, metric in enumerate(METRICS_TO_PLOT):
-        ax1.plot(iterations, all_data[metric], line_styles[i % len(line_styles)], color=colors(i), 
-                 label=f'{metric.replace("_", " ").title()}')
+        y_values = all_data[metric]
+        color_i = colors(i)
+        
+        # Plot the line/points
+        ax1.plot(iterations, y_values, line_styles[i % len(line_styles)], color=color_i, 
+                label=f'{metric.replace("_", " ").title()}')
+
+        # --- MODIFICATION: Add annotation for each point ---
+        for x, y in zip(iterations, y_values):
+            # Format the value to 3 decimal places (e.g., 0.654)
+            label = f"{y:.3f}"
+            
+            # Annotate the point (x, y) with a small offset
+            ax1.annotate(label, # The text to display
+                        (x, y), # The point (x, y) to annotate
+                        textcoords="offset points", # How to interpret xytext
+                        xytext=(5, 5), # (x, y) offset from the data point
+                        ha='left', # Horizontal alignment of the text
+                        fontsize=8, # Smaller font size for annotations
+                        color=color_i) # Match color to the line
+        # --- END MODIFICATION ---
 
     # Set up titles and labels
     ax1.set_title(f'Model Performance Over Training Iterations ({SETTING})', fontsize=16, fontweight='bold')
     ax1.set_xlabel('Training Iteration', fontsize=12)
     # Use a generic label for the primary axis since metrics might be mixed
-    ax1.set_ylabel('acc,none', fontsize=12) 
+    ax1.set_ylabel('Accuracy (acc,none)', fontsize=12) 
 
     # Add grid, legend, and ticks
     ax1.grid(True, linestyle='--', alpha=0.6)
@@ -168,7 +186,12 @@ def load_and_plot_evaluation_results():
     ax1.set_xticks(iterations)
     
     plt.tight_layout() # Adjust layout to prevent labels from overlapping
+    
+    # Ensure the 'plots' directory exists before saving
+    os.makedirs('plots', exist_ok=True)
+    
     plt.savefig(f'plots/{SETTING}.png')
+    print(f"Plot saved to plots/{SETTING}.png")
     print("Plot display finished.")
 
 

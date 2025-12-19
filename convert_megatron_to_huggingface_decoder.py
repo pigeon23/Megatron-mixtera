@@ -309,18 +309,17 @@ def convert_megatron_checkpoint(args, input_state_dict, config):
 
 
 def infer_config_from_checkpoint(state_dict: Dict[str, Any], ffn_hidden_size: int, max_seq_len: int, n_kv_heads_override: int = None, n_heads_override: int = None, rope_theta: int = None) -> Dict:
-    print(state_dict["model"].keys())
-    states = state_dict["model"]["language_model"]
+    states = state_dict["model"]
     # Infer hidden_size from the token embedding weight (dimensions: vocab_size x hidden_size)
-    vocab_size, hidden_size = states["embedding"]["word_embeddings"]["weight"].shape
+    vocab_size, hidden_size = states["embedding.word_embeddings.weight"].shape
     print(f"Inferred vocab_size={vocab_size}, hidden_size={hidden_size} from token embeddings.")
     # Count unique transformer layers using keys like "layers.{i}.attention.wq.weight"
     layer_indices = set()
-    for key in states["encoder"].keys():
-        if key.startswith("layers."):
+    for key in states.keys():
+        if key.startswith("decoder.layers."):
             parts = key.split(".")
-            if len(parts) > 1 and parts[1].isdigit():
-                layer_indices.add(int(parts[1]))
+            if len(parts) > 1 and parts[2].isdigit():
+                layer_indices.add(int(parts[2]))
     if not layer_indices:
         raise ValueError("No transformer layer keys found in checkpoint!")
     print(f"Inferred n_layers={max(layer_indices) + 1} from transformer layer keys.")
@@ -367,25 +366,23 @@ def to_huggingface(states: Dict[str, Any], config: Dict):
     # step 2: load the model weights, translating them accordingly
     new_state_dict = {}
     with torch.inference_mode():
-        states_dicts = states["model"]["language_model"]
+        states_dicts = states["model"]
         
         # states_dicts = {k: v.contiguous() for k, v in states_dicts.items()}
-        new_state_dict["model.embed_tokens.weight"] = states_dicts["embedding"]["word_embeddings"]["weight"].contiguous()
+        new_state_dict["model.embed_tokens.weight"] = states_dicts["embedding.word_embeddings.weight"].contiguous()
         
-        if 'output_layer' not in states_dicts:
-            new_state_dict["lm_head.weight"] = states_dicts["embedding"]["word_embeddings"]["weight"].contiguous()
+        if 'output_layer.weight' not in states_dicts:
+            new_state_dict["lm_head.weight"] = states_dicts["embedding.word_embeddings.weight"].contiguous()
         else:
-            new_state_dict["lm_head.weight"] = states_dicts["output_layer"]["weight"].contiguous()
+            new_state_dict["lm_head.weight"] = states_dicts["output_layer.weight"].contiguous()
+    
         
         
-        states_dicts = states_dicts["encoder"]
-        
-        
-        new_state_dict["model.norm.weight"] = states_dicts["final_norm.weight"]
+        new_state_dict["model.norm.weight"] = states_dicts["decoder.final_layernorm.weight"]
         dims_per_head = hf_config.hidden_size // hf_config.num_attention_heads
 
         for i in range(hf_config.num_hidden_layers):
-            qkv = states_dicts[f"layers.{i}.self_attention.query_key_value.weight"]
+            qkv = states_dicts[f"decoder.layers.{i}.self_attention.linear_qkv.weight"]
             
             input_shape = qkv.size()
             saved_shape = (hf_config.num_key_value_heads, (hf_config.num_attention_heads//hf_config.num_key_value_heads+2), dims_per_head) + input_shape[1:]
@@ -404,16 +401,16 @@ def to_huggingface(states: Dict[str, Any], config: Dict):
             new_state_dict[f"model.layers.{i}.self_attn.k_proj.weight"] = k.contiguous()
             new_state_dict[f"model.layers.{i}.self_attn.v_proj.weight"] = v.contiguous()
             new_state_dict[f"model.layers.{i}.self_attn.o_proj.weight"] = states_dicts[
-                f"layers.{i}.self_attention.dense.weight"
+                f"decoder.layers.{i}.self_attention.linear_proj.weight"
             ].contiguous()
             new_state_dict[f"model.layers.{i}.input_layernorm.weight"] = states_dicts[
-                f"layers.{i}.input_norm.weight"
+                f"decoder.layers.{i}.self_attention.linear_qkv.layer_norm_weight"
             ].contiguous()
             new_state_dict[f"model.layers.{i}.post_attention_layernorm.weight"] = states_dicts[
-                f"layers.{i}.post_attention_norm.weight"
+                f"decoder.layers.{i}.mlp.linear_fc1.layer_norm_weight"
             ].contiguous()
             
-            h_to_4h = states_dicts[f"layers.{i}.mlp.dense_h_to_4h.weight"]
+            h_to_4h = states_dicts[f"decoder.layers.{i}.mlp.linear_fc1.weight"]
             # input_shape = h_to_4h.size()
             # saved_shape = (-1, 2) + input_shape[1:]
             # h_to_4h = h_to_4h.view(*saved_shape)
@@ -424,7 +421,7 @@ def to_huggingface(states: Dict[str, Any], config: Dict):
             
             new_state_dict[f"model.layers.{i}.mlp.gate_proj.weight"] = gate_proj.contiguous()
             new_state_dict[f"model.layers.{i}.mlp.down_proj.weight"] = states_dicts[
-                f"layers.{i}.mlp.dense_4h_to_h.weight"
+                f"decoder.layers.{i}.mlp.linear_fc2.weight"
             ].contiguous()
             new_state_dict[f"model.layers.{i}.mlp.up_proj.weight"] = up_proj.contiguous()
 
