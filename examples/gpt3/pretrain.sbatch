@@ -2,40 +2,25 @@
 #SBATCH --job-name=pretrain
 #SBATCH --output=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.out
 #SBATCH --error=/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/pretrain_%j.err
-#SBATCH --environment=mixtera
 #SBATCH --partition=normal
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
-#SBATCH --nodes=32
+#SBATCH --nodes=16
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
 # CUDA_LAUNCH_BLOCKING=1 
 # TORCH_DISTRIBUTED_DEBUG=DETAIL
 
-# decorating main function with: from torch.distributed.elastic.multiprocessing.errors import record
+set -x
 
-# # Set maximum stack size to unlimited
-# ulimit -s unlimited
-# # Set max number of open file descriptors to a high value
-# ulimit -n 65536
-# Allow core dumps for post-mortem debugging
 ulimit -c 0
-
+export OMP_NUM_THREADS=8 
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1 
 export TRITON_HOME=/dev/shm/ 
-
+export MPICH_GPU_SUPPORT_ENABLED=0 
 export CUDA_CACHE_DISABLE=1 
-
-# export LOGLEVEL=DEBUG
-export PYTHONFAULTHANDLER=1
-export NCCL_DEBUG=WARN
-export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
-export CUDA_LAUNCH_BLOCKING=0
-export OMP_NUM_THREADS=64
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export NCCL_NET="AWS Libfabric"
-
 export NCCL_NET_GDR_LEVEL=PHB
 export NCCL_CROSS_NIC=1
 export NCCL_PROTO=^LL128
@@ -44,18 +29,16 @@ export FI_CXI_DEFAULT_TX_SIZE=16384
 export FI_CXI_DISABLE_HOST_REGISTER=1
 export FI_CXI_RX_MATCH_MODE=software
 export FI_MR_CACHE_MONITOR=userfaultfd
-export NCCL_NCHANNELS_PER_NET_PEER=4
 
 
-export FI_EFA_FORK_SAFE=1
-export NCCL_IB_TIMEOUT=22         # Increases retry timeout significantly
+
 export TORCH_DISTRIBUTED_TIMEOUT=5400 # 90 minutes
-export NCCL_ASYNC_ERROR_HANDLING=1
-export NCCL_IB_RETRY_CNT=7
 
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/tensorboard
-rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog
+# rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt
+# rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/tensorboard
+# rm -rf /iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog
+
+rm -rf /iopsstor/scratch/cscs/yiswang/mixtera/build_nid*
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 
 
@@ -88,30 +71,25 @@ DISTRIBUTED_ARGS=(
 )
 
 GPT_MODEL_ARGS=(
-    --num-layers 28 
-    --hidden-size 3072
-    --ffn-hidden-size 8192
-    --num-attention-heads 24
-    --group-query-attention
-    --num-query-groups 8
-    --kv-channels 128
+    --num-layers 24 
+    --hidden-size 2048
+    --ffn-hidden-size 5464
+    --num-attention-heads 16
     --seq-length 2048 
     --max-position-embeddings 2048 
     --attention-backend flash # Can use (flash/fused/unfused/local)
     --normalization RMSNorm
-    --rotary-base 500000
+    --rotary-base 10000
     --swiglu
     --attention-dropout 0
     --hidden-dropout 0
-    # --no-bias-swiglu-fusion
-    # --no-bias-dropout-fusion
     --position-embedding-type rope
     --untie-embeddings-and-output-weights
     --disable-bias-linear
 )
 
 TRAINING_ARGS=(
-    --micro-batch-size 16
+    --micro-batch-size 32
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
     --train-iters 30000
@@ -145,10 +123,13 @@ MODEL_PARALLEL_ARGS=(
 	--pipeline-model-parallel-size 1
     # --use-torch-fsdp2
     # --no-gradient-accumulation-fusion
+    --overlap-param-gather
+    --overlap-grad-reduce
+    --use-distributed-optimizer
     --distributed-timeout-minutes 30
     --recompute-granularity full
     --recompute-method uniform
-    --recompute-num-layers 4
+    --recompute-num-layers 6
 )
 
 DATA_ARGS=(
@@ -158,6 +139,7 @@ DATA_ARGS=(
     --split 949,50,1
     --dataloader-type mixtera # mixtera
     --num-workers 4
+    --mixtera-chunk-size 4096
 )
 
 EVAL_AND_LOGGING_ARGS=(
@@ -166,12 +148,10 @@ EVAL_AND_LOGGING_ARGS=(
     --eval-interval 100000 
     --save $CHECKPOINT_PATH 
     --load $CHECKPOINT_PATH 
+    --ckpt-format torch
     --eval-iters 0
     --tensorboard-dir $TENSORBOARD_LOGS_PATH 
-    --record-memory-history
-    --log-memory-to-tensorboard
     --log-timers-to-tensorboard
-    --log-throughput
 )
 
 echo "[sbatch-master] running on $(hostname)"
@@ -197,9 +177,11 @@ torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "${TRAINING_ARGS[@]}" \
     "${MODEL_PARALLEL_ARGS[@]}" \
     "${DATA_ARGS[@]}" \
-    "${EVAL_AND_LOGGING_ARGS[@]}"
+    "${EVAL_AND_LOGGING_ARGS[@]}" \
+    --mixtera-job-id 78 \
+    --mixtera-ip 172.28.46.112
     "
 
-srun bash -c "$CMD"
+srun --container-writable --environment=mixtera bash -c "$CMD"
 
 # bash ./examples/gpt3/train_gpt3_175b_distributed.sh experiments/ckpt/ experiments/tensorboard/ experiments/gpt_vocab.json experiments/gpt_merges.txt processed_data/processed_data_text_document

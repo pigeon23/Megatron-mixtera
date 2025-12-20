@@ -10,6 +10,7 @@
 #SBATCH --account=a-infra02
 #SBATCH --time=11:59:00
 
+set -ex
 
 # export LOGLEVEL=DEBUG
 # export PYTHONFAULTHANDLER=1
@@ -38,9 +39,9 @@ NUM_NODES=$SLURM_NNODES
 # NODE_RANK=0
 # WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES)) 
 
-CHECKPOINT_PATH="experiments/18-11-2025/ckpt/" # $1 #<Specify path>
+CHECKPOINT_PATH="experiments/ckpt/" # $1 #<Specify path>
 
-CONVERT_CHECKPOINT_PATH="experiments/18-11-2025/ckpt-convert/"
+CONVERT_CHECKPOINT_PATH="experiments/ckpt-torch/"
 
 TENSORBOARD_LOGS_PATH="experiments/tensorboard/" # $2 #<Specify path>
 VOCAB_FILE="experiments/gpt_vocab.json" # $3 #<Specify path to file>/gpt2-vocab.json
@@ -55,36 +56,43 @@ DISTRIBUTED_ARGS=(
     --node_rank \$SLURM_NODEID
 )
 
+
 GPT_MODEL_ARGS=(
-    --num-layers 24 
-    --hidden-size 2048
-    # --ffn-hidden-size 5464
-    --num-attention-heads 16
+    --num-layers 28 
+    --hidden-size 3072
+    --ffn-hidden-size 8192
+    --num-attention-heads 24
+    --group-query-attention
+    --num-query-groups 8
+    --kv-channels 128
     --seq-length 2048 
     --max-position-embeddings 2048 
-    --attention-backend auto # Can use (flash/fused/unfused/local)
+    --attention-backend flash # Can use (flash/fused/unfused/local)
     --normalization RMSNorm
+    --rotary-base 500000
     --swiglu
     --attention-dropout 0
     --hidden-dropout 0
     # --no-bias-swiglu-fusion
     # --no-bias-dropout-fusion
     --position-embedding-type rope
+    --untie-embeddings-and-output-weights
     --disable-bias-linear
 )
 
+
 TRAINING_ARGS=(
-    --micro-batch-size 8
+    --micro-batch-size 16
     # --global-batch-size 64 
     # --rampup-batch-size 16 16 5859375 
-    --train-iters 10000
+    --train-iters 30000
     --weight-decay 0.1 
     --adam-beta1 0.9 
     --adam-beta2 0.95 
     --init-method-std 0.006 
     --clip-grad 1.0 
     --bf16
-    --lr 0.0001 # 6.0e-5 
+    --lr 0.001 # 6.0e-5 
     --lr-decay-style WSD 
     --lr-wsd-decay-style linear
     --lr-wsd-decay-iters 3000
@@ -95,17 +103,25 @@ TRAINING_ARGS=(
     # --min-lr 6.0e-6
     # --lr-warmup-fraction .001 
     # --lr-decay-iters 430000 
-    --no-load-optim
-    --load-main-params-from-ckpt
-    --no-load-rng
-    --use-checkpoint-args
+    # --optimizer-cpu-offload
+    # --use-precision-aware-optimizer
+    # --use-distributed-optimizer
+    # --main-grads-dtype bf16
+    # --exp-avg-dtype bf16
+    # --exp-avg-sq-dtype bf16
 )
 
 MODEL_PARALLEL_ARGS=(
-	--tensor-model-parallel-size 2
-	--pipeline-model-parallel-size 2
+	--tensor-model-parallel-size 1
+	--pipeline-model-parallel-size 1
+    # --use-torch-fsdp2
+    # --no-gradient-accumulation-fusion
     --distributed-timeout-minutes 30
+    --recompute-granularity full
+    --recompute-method uniform
+    --recompute-num-layers 4
 )
+
 
 DATA_ARGS=(
     --data-path $DATA_PATH 
@@ -128,6 +144,7 @@ EVAL_AND_LOGGING_ARGS=(
     --log-memory-to-tensorboard
     --ckpt-convert-format torch
     --ckpt-convert-save $CONVERT_CHECKPOINT_PATH
+    --use-checkpoint-args
 )
 
 echo "[sbatch-master] running on $(hostname)"
@@ -143,6 +160,10 @@ echo \"[srun] rank=\$SLURM_PROCID host=\$(hostname) noderank=\$SLURM_NODEID loca
 
 export node_rank=\$SLURM_NODEID
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
+
+pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
+pip install megatron-core
+pip install --no-build-isolation transformer-engine[pytorch]
 
 torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "${GPT_MODEL_ARGS[@]}" \
