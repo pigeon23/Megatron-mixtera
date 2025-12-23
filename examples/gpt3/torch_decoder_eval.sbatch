@@ -11,14 +11,7 @@
 
 set -ex
 
-export NCCL_NET="AWS Libfabric"
-export CUDA_DEVICE_MAX_CONNECTIONS=1
-
-pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
-pip install megatron-core
-pip install --no-build-isolation transformer-engine[pytorch]
-
-LOAD_DIR="/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/ckpt" 
+LOAD_DIR="/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/1B-default-ado-4096chunk/ckpt" 
 SAVE_DIR="$LOAD_DIR/../ckpt-converted" 
 
 ITER_PATH="$LOAD_DIR/latest_checkpointed_iteration.txt"
@@ -27,6 +20,15 @@ ITER=$(cat $ITER_PATH)
 ITER=$(printf %07d $ITER)
 
 echo $ITER
+
+
+export NCCL_NET="AWS Libfabric"
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+
+pushd /iopsstor/scratch/cscs/yiswang/mixtera && pip install -e . && popd
+pip install megatron-core
+pip install --no-build-isolation transformer-engine[pytorch]
+
 
 cd /iopsstor/scratch/cscs/yiswang/Megatron-mixtera
 

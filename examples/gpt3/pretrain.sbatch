@@ -29,8 +29,10 @@ export FI_CXI_DEFAULT_TX_SIZE=16384
 export FI_CXI_DISABLE_HOST_REGISTER=1
 export FI_CXI_RX_MATCH_MODE=software
 export FI_MR_CACHE_MONITOR=userfaultfd
+export NCCL_NCHANNELS_PER_NET_PEER=4
 
 
+export LOGURU_LEVEL=INFO
 
 export TORCH_DISTRIBUTED_TIMEOUT=5400 # 90 minutes
 
@@ -178,10 +180,11 @@ torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "${MODEL_PARALLEL_ARGS[@]}" \
     "${DATA_ARGS[@]}" \
     "${EVAL_AND_LOGGING_ARGS[@]}" \
-    --mixtera-job-id 78 \
-    --mixtera-ip 172.28.46.112
+    --mixtera-pile default\
+    --mixtera-job-id 83 \
+    --mixtera-ip 172.28.40.80
     "
 
-srun --container-writable --environment=mixtera bash -c "$CMD"
+srun --mpi=pmix --container-writable --environment=mixtera bash -c "$CMD"
 
 # bash ./examples/gpt3/train_gpt3_175b_distributed.sh experiments/ckpt/ experiments/tensorboard/ experiments/gpt_vocab.json experiments/gpt_merges.txt processed_data/processed_data_text_document

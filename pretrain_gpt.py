@@ -480,7 +480,12 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
 
     mixture_ado_def = DynamicMixture(strict=False, chunk_size=chunk_size, initial_mixture=mixture_static, mixing_alg=AdoDynamicMixing(gamma2=0.1, count_normalizer=seq_len, use_same_step_size=True, delta_min=0.01, subsampling_interval=10, scaling_law_update_interval=1000, ignore_initial_steps=500, start_step=1000, logging_path=f"/iopsstor/scratch/cscs/yiswang/Megatron-mixtera/experiments/adolog/{job_id}_seqfix.json", variant="vanilla"))   
     
-    mixture = mixture_ado_def
+    if args.mixtera_pile == 'default':
+        mixture = mixture_static
+    elif args.mixtera_pile == 'ado':
+        mixture = mixture_ado_def
+    else:
+        raise ValueError(f"Unknown mixtera_pile type {args.mixtera_pile}")
     
     query = Query.for_job(job_id).select(None) # ("redpajama_set_name", "!=", "RedPajamaCommonCrawl")
     
