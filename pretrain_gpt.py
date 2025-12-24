@@ -67,11 +67,7 @@ def get_batch(data_iterator, vp_stage=None):
     
     # slice batch along sequence dimension for context parallelism
     batch = get_batch_on_this_cp_rank(batch)
-    
-    # print(f"Rank {torch.distributed.get_rank()} has {batch.keys()}", flush=True)
-    # if torch.distributed.get_rank() == 0:
-    #     print("*****************************************")
-
+   
     return batch.values()
  
 
@@ -160,8 +156,6 @@ def loss_func(
     args = get_args()
     timers = get_timers()
     
-    # print(f"[Rank {torch.distributed.get_rank()}] loss func output tensor of shape {output_tensor.shape}, output tensor: {output_tensor}")
-
     if has_nvidia_modelopt and modelopt_args_enabled(args):  # [ModelOpt]
         return loss_func_modelopt(loss_mask, output_tensor, model=model)
 
@@ -177,8 +171,6 @@ def loss_func(
             per_domain_loss_module = PerDomainLoss(device=torch.cuda.current_device())
         per_domain_loss_module(output_tensor, key_ids)
         pp_tp_group = parallel_state.get_data_parallel_group()  # should be all last stage of pp in all dp groups
-        # print(f"[Rank {torch.distributed.get_rank()}]", parallel_state._DATA_PARALLEL_GLOBAL_RANKS)
-        # print(f"[Rank {torch.distributed.get_rank()}]", pp_tp_group)
         init_async_start = time.perf_counter()
         with torch.no_grad():
             losses_tensor, counts_tensor, max_id_tensor = per_domain_loss_module.get_per_domain_stats()
@@ -202,7 +194,6 @@ def loss_func(
         wait_mixtera_time = time.perf_counter() - wait_mixtera_start
         global wait_time_accumulator
         wait_time_accumulator += wait_mixtera_time
-        # print(f"[Rank {torch.distributed.get_rank()}] [Iteration {iteration}] handle mixtera feedback ")
         dp_rank = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
         tp_rank = parallel_state.get_tensor_model_parallel_rank()
         mixtera_feedback_start = time.perf_counter()
@@ -280,7 +271,6 @@ def forward_step(data_iterator, model: GPTModel, return_schedule_plan: bool = Fa
     with stimer(bdata=True):
         vp_stage = get_attr_wrapped_model(model, "vp_stage")
         tokens, labels, loss_mask, attention_mask, position_ids, key_ids = get_batch(data_iterator, vp_stage)
-        # print(f"[Rank {torch.distributed.get_rank()}] obtained batch at iteration {iteration}, {tokens.shape}, {labels.shape if hasattr(labels, "shape") else None}, {loss_mask.shape if hasattr(loss_mask, "shape") else None}, {attention_mask.shape}, {position_ids.shape}")
     timers('batch-generator').stop()
     with stimer:
         if args.use_legacy_models:
@@ -487,11 +477,11 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
     else:
         raise ValueError(f"Unknown mixtera_pile type {args.mixtera_pile}")
     
-    query = Query.for_job(job_id).select(None) # ("redpajama_set_name", "!=", "RedPajamaCommonCrawl")
+    query = Query.for_job(job_id).select(None) 
     
     world_size: int = torch.distributed.get_world_size()
     nodes_per_dp_group = world_size // parallel_state.get_data_parallel_world_size()
-    # dp_group_id = parallel_state.get_data_parallel_rank() # rank in its dp group or its dp group id ?
+    
     dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
     dp_degree = parallel_state.get_data_parallel_world_size()
     dp_group = parallel_state.get_model_parallel_group()
@@ -502,7 +492,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
 
     
     qea = QueryExecutionArgs(mixture=mixture, dp_groups=dp_degree, nodes_per_group=nodes_per_dp_group, num_workers=num_workers)
-    # TODO set tunnel_via_server to False 
+
     rsa = ResultStreamingArgs(job_id=job_id, dp_group_id=dp_group_id, node_id=node_id, tunnel_via_server=False, # set tunnel_via_server to False 
                              chunk_reading_degree_of_parallelism=1,
                              chunk_reading_tokenizer="EleutherAI/gpt-neox-20b",  # EleutherAI/gpt-neox-20b
@@ -510,8 +500,7 @@ def mixtera_provider(train_val_test_num_samples, vp_stage=None):
                              chunk_reading_sequence_len=seq_len,
                              chunk_reading_token_overlapping=False, 
                              chunk_reading_eos=True)
-    # using eos, require extra process with built-in method: _get_ltor_masks_and_position_ids
-    # bos and eos token id: 50256
+
     load_path = Path(args.load)
     if not os.path.exists(load_path / "mixtera.id"):
         load_path = None
