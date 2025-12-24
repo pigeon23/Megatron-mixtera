@@ -786,6 +786,14 @@ def validate_args(args, defaults={}):
 
     if args.dataloader_type is None:
         args.dataloader_type = 'single'
+        
+    if args.dataloader_type == 'mixtera':
+        assert args.virtual_pipeline_model_parallel_size is None, \
+            'MixTera does not support interleaved pipeline parallelism yet.'
+        assert args.context_parallel_size == 1, \
+            'MixTera does not support context parallelism yet.'
+        assert args.num_experts == 0 or args.num_experts is None, \
+            'MixTera does not support MoE yet.'
 
     # data
     assert args.num_dataset_builder_threads > 0
