@@ -1,5 +1,17 @@
 <div align="center">
 
+
+Megatron with Mixtera
+
+## To start
+```bash
+./examples/gpt3/pretrain.sbatch
+```
+
+
+------------------------------------------------------
+
+
 Megatron-LM & Megatron Core
 ===========================
 <h4>GPU-optimized library for training transformer models at scale</h4>

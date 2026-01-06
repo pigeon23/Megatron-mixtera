@@ -51,12 +51,7 @@ export WORLD_SIZE=$(( SLURM_NNODES * SLURM_NTASKS_PER_NODE ))
 # export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 GPUS_PER_NODE=4
-# Change for multinode config
-# MASTER_ADDR=localhost
-# MASTER_PORT=1234
 NUM_NODES=$SLURM_NNODES
-# NODE_RANK=0
-# WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES)) 
 
 CHECKPOINT_PATH="experiments/ckpt/" # $1 #<Specify path>
 TENSORBOARD_LOGS_PATH="experiments/tensorboard/" # $2 #<Specify path>
@@ -123,8 +118,6 @@ TRAINING_ARGS=(
 MODEL_PARALLEL_ARGS=(
 	--tensor-model-parallel-size 1
 	--pipeline-model-parallel-size 1
-    # --use-torch-fsdp2
-    # --no-gradient-accumulation-fusion
     --overlap-param-gather
     --overlap-grad-reduce
     --use-distributed-optimizer
@@ -186,5 +179,3 @@ torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "
 
 srun --mpi=pmix --container-writable --environment=mixtera bash -c "$CMD"
-
-# bash ./examples/gpt3/train_gpt3_175b_distributed.sh experiments/ckpt/ experiments/tensorboard/ experiments/gpt_vocab.json experiments/gpt_merges.txt processed_data/processed_data_text_document
