@@ -182,7 +182,7 @@ torchrun "${DISTRIBUTED_ARGS[@]}" pretrain_gpt.py \
     "${EVAL_AND_LOGGING_ARGS[@]}" \
     --mixtera-pile default\
     --mixtera-job-id 83 \
-    --mixtera-ip 172.28.40.80
+    --mixtera-ip 172.28.33.72
     "
 
 srun --mpi=pmix --container-writable --environment=mixtera bash -c "$CMD"

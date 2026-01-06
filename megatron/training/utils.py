@@ -516,9 +516,7 @@ def get_batch_on_this_tp_rank(data_iterator):
 
         assert data_iterator is not None
         data = next(data_iterator)
-        # for key, value in data.items():
-        #     print(f"Batch key: {key}, shape: {value.shape}")
-        # print("---- End of batch keys ----")
+        
         batch = {
             'tokens': data["tokens"].cuda(non_blocking=True),
             'labels': data["labels"].cuda(non_blocking=True),

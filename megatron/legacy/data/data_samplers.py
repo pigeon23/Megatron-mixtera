@@ -51,20 +51,6 @@ def build_pretraining_data_loader(dataset, consumed_samples):
             data_parallel_size=mpu.get_data_parallel_world_size(),
             data_sharding=args.data_sharding)
     elif args.dataloader_type == 'mixtera':
-        # loader = torch.utils.data.DataLoader(dataset,
-        #                                    batch_size=args.micro_batch_size,
-        #                                    num_workers=args.num_workers,
-        #                                    pin_memory=True,
-        #                                    persistent_workers=True if args.num_workers > 0 else False,
-        #                                    )
-        # size = 0
-        # for i, _ in enumerate(loader):
-        #     size += 1
-        #     for k, v in _.items():
-        #         print(f"Key: {k}, Shape: {v.shape}")
-        #     print(f'---- End of batch {i} ----')
-        # print(f"Mixtera dataloader size: {size}")
-        
         return torch.utils.data.DataLoader(dataset,
                                            batch_size=args.micro_batch_size,
                                            num_workers=args.num_workers
