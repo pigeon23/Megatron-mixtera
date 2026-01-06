@@ -88,12 +88,67 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
 
     return parser
 
+def add_mixtera_arguments(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group(title="mixtera")
+    group.add_argument(
+            "--mixtera-ip",
+            type=str,
+            default="127.0.0.1",
+            help="ip of mixtera server",
+        )
+    group.add_argument(
+            "--mixtera-port",
+            type=int,
+            default=8080,
+            help="port of mixtera server",
+        )
+    group.add_argument(
+            "--mixtera-vocab-size",
+            type=int,
+            default=-1,
+            help="vocab size of model",
+        )
+    group.add_argument(
+            "--mixtera-job-id",
+            type=str,
+            default="torchtitan job",
+            help="job name for the server",
+        )
+    group.add_argument(
+            "--mixtera-chunk-size",
+            type=int,
+            default=512,
+            help="chunk size",
+        )
+    group.add_argument(
+            "--mixtera-tunnel-via-server",
+            action="store_true",
+            help="Whether to tunnel the data via the server.",
+        )
+    group.add_argument(
+            "--mixtera-chunk-reading-degree-of-parallelism",
+            type=int,
+            default=1,
+            help="chunk_reading_degree_of_parallelism",
+        )
+    group.add_argument(
+            "--mixtera-pile",
+            type=str,
+            default="default",
+            choices=["ado", "default", "natural"],
+            help="""
+                currently we only support mixtures for the pile hardcoded, this picks the mixture for the training.
+            """,
+        )
+    return parser
+
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
     """Parse all arguments."""
     parser = argparse.ArgumentParser(description='Megatron-LM Arguments',
                                      allow_abbrev=False)
 
     parser = add_megatron_arguments(parser)
+    parser = add_mixtera_arguments(parser)
 
     # Custom arguments.
     if extra_args_provider is not None:
@@ -731,6 +786,14 @@ def validate_args(args, defaults={}):
 
     if args.dataloader_type is None:
         args.dataloader_type = 'single'
+        
+    if args.dataloader_type == 'mixtera':
+        assert args.virtual_pipeline_model_parallel_size is None, \
+            'MixTera does not support interleaved pipeline parallelism yet.'
+        assert args.context_parallel_size == 1, \
+            'MixTera does not support context parallelism yet.'
+        assert args.num_experts == 0 or args.num_experts is None, \
+            'MixTera does not support MoE yet.'
 
     # data
     assert args.num_dataset_builder_threads > 0
@@ -2155,7 +2218,7 @@ def _add_training_args(parser):
     group.add_argument('--no-pin-cpu-params', action='store_false', dest='pin_cpu_params',
                        help='Disable pinning of CPU memory for parameters.')
     group.add_argument('--dataloader-type', type=str, default=None,
-                       choices=['single', 'cyclic', 'external'],
+                       choices=['single', 'cyclic', 'external', 'mixtera'],
                        help='Single pass vs multiple pass data loader')
     group.add_argument('--no-async-tensor-model-parallel-allreduce',
                        action='store_false',
@@ -2223,7 +2286,7 @@ def _add_rerun_machine_args(parser):
     group.add_argument('--error-injection-type', type=str, default='transient_error',
                        choices=['correct_result', 'transient_error', 'persistent_error'],
                        help='Type of error to inject. ')
-    group.add_argument('--rerun-mode', type=str, default='validate_results',
+    group.add_argument('--rerun-mode', type=str, default='disabled',
                        choices=['disabled', 'validate_results', 'report_stats'],
                        help='Use re-run engine to validate results (default) '
                        'or to emit stats on variability of computations due to '

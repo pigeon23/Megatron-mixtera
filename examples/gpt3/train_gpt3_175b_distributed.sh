@@ -4,11 +4,11 @@
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-GPUS_PER_NODE=8
+GPUS_PER_NODE=4
 # Change for multinode config
-MASTER_ADDR=localhost
-MASTER_PORT=6000
-NUM_NODES=1
+# MASTER_ADDR=localhost
+MASTER_PORT=1234
+NUM_NODES=2
 NODE_RANK=0
 WORLD_SIZE=$(($GPUS_PER_NODE*$NUM_NODES))
 
@@ -26,19 +26,19 @@ DISTRIBUTED_ARGS=(
 )
 
 GPT_MODEL_ARGS=(
-    --num-layers 96 
-    --hidden-size 12288 
-    --num-attention-heads 96 
-    --seq-length 2048 
-    --max-position-embeddings 2048 
+    --num-layers 12 
+    --hidden-size 512 
+    --num-attention-heads 8
+    --seq-length 4096 
+    --max-position-embeddings 4096 
     --attention-backend auto # Can use (flash/fused/unfused/local)
 )
 
 TRAINING_ARGS=(
-    --micro-batch-size 1 
-    --global-batch-size 1536 
-    --rampup-batch-size 16 16 5859375 
-    --train-iters 500000 
+    --micro-batch-size 32
+    # --global-batch-size 32 
+    # --rampup-batch-size 16 16 5859375 
+    --train-iters 500
     --weight-decay 0.1 
     --adam-beta1 0.9 
     --adam-beta2 0.95 
@@ -53,8 +53,8 @@ TRAINING_ARGS=(
 )
 
 MODEL_PARALLEL_ARGS=(
-	--tensor-model-parallel-size 8 
-	--pipeline-model-parallel-size 16 
+	--tensor-model-parallel-size 2
+	--pipeline-model-parallel-size 2
 )
 
 DATA_ARGS=(
@@ -62,12 +62,13 @@ DATA_ARGS=(
     --vocab-file $VOCAB_FILE 
     --merge-file $MERGE_FILE 
     --split 949,50,1
+    --dataloader-type mixtera
 )
 
 EVAL_AND_LOGGING_ARGS=(
     --log-interval 100
     --save-interval 10000 
-    --eval-interval 1000 
+    --eval-interval 100 
     --save $CHECKPOINT_PATH 
     --load $CHECKPOINT_PATH 
     --eval-iters 10
