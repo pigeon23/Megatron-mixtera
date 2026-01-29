@@ -57,8 +57,8 @@ class MegatronCheckpointLoaderLLM(MegatronCheckpointLoaderBase):
         if self.args.model_type == 'GPT':
             from model_provider import model_provider
             from gpt_builders import gpt_builder
-            self.model_provider = partial(model_provider, gpt_builder)
-            return model_provider
+            model_provider_func = partial(model_provider, gpt_builder)
+            return model_provider_func
         elif self.args.model_type == 'BERT':
             from pretrain_bert import model_provider
             return model_provider
@@ -84,6 +84,13 @@ def load_checkpoint(queue, args):
     Required top-level function that creates the loader,
     calls its .load(), and handles exceptions by signaling 'exit'.
     """
+    # os.environ['RANK'] = str(0)
+    # os.environ['WORLD_SIZE'] = str(1)
+    # os.environ['LOCAL_RANK'] = str(0)
+    # os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environ['MASTER_PORT'] = '6543'
+    
+    # torch.distributed.init_process_group(backend='nccl')
     loader = MegatronCheckpointLoaderLLM(args, queue)
     try:
         loader.load()

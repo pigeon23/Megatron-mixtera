@@ -9,7 +9,7 @@ from functools import partial
 
 import torch
 
-from tools.checkpoint.utils import _ConverterFakeProcessGroup
+from utils import _ConverterFakeProcessGroup
 
 
 def add_arguments(parser):

@@ -90,7 +90,6 @@ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None):
             mtp_block_spec=mtp_block_spec,
             vp_stage=vp_stage,
         )
-
     return model
 
 

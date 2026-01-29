@@ -249,7 +249,7 @@ train_data_path: null
 valid_data_path: null
 test_data_path: null
 data_cache_path: null
-mock_data: False
+mock_data: True
 vocab_size: null
 vocab_file: null
 merge_file: null

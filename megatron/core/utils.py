@@ -1830,7 +1830,6 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
                 val = val.index_select(seq_dim, index)
                 val = val.view(*val.shape[0:seq_dim], -1, *val.shape[(seq_dim + 2) :])
                 batch[key] = val
-
     return batch
 
 

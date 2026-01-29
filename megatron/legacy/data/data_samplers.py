@@ -50,6 +50,11 @@ def build_pretraining_data_loader(dataset, consumed_samples):
             data_parallel_rank=mpu.get_data_parallel_rank(),
             data_parallel_size=mpu.get_data_parallel_world_size(),
             data_sharding=args.data_sharding)
+    elif args.dataloader_type == 'mixtera':
+        return torch.utils.data.DataLoader(dataset,
+                                           batch_size=args.micro_batch_size,
+                                           num_workers=args.num_workers
+                                           )
     elif args.dataloader_type == "external":
         # External dataloaders are passed through. User is expected to provide a
         # torch-compatible dataloader and define samplers, if needed.

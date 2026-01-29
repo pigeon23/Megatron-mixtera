@@ -90,12 +90,14 @@ import sys
 def load_plugin(plugin_type, name):
     module_name = f"{plugin_type}_{name}"
     try:
-        plugin = importlib.import_module(module_name)
+        print('Trying to load ', module_name)
+        plugin = importlib.import_module(module_name, package='.')
     except ModuleNotFoundError as e:
         print(e)
         module_name = name
         try:
-            plugin = importlib.import_module(module_name)
+            print('Trying to load ', module_name)
+            plugin = importlib.import_module(module_name, package='.')
         except ModuleNotFoundError as e:
             print(e)
             sys.exit(f"Unable to load {plugin_type} plugin {name}. Exiting.")

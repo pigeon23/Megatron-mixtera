@@ -134,6 +134,7 @@ stimer = StragglerDetector()
 
 from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 
+from mixtera.utils.checkpoint import handle_mixtera_checkpoint
 
 def destroy_global_state():
     destroy_global_vars()
@@ -521,7 +522,9 @@ def preprocess_common_state_dict(common_state_dict):
 
     return preprocessed_common_state_dict
 
+from torch.distributed.elastic.multiprocessing.errors import record
 
+@record
 def pretrain(
     train_valid_test_dataset_provider,
     model_provider,
@@ -670,6 +673,10 @@ def pretrain(
     app_metrics['app_build_dataiters_start_time'] = one_logger_utils.get_timestamp_in_ms()
     timers('train/valid/test-data-iterators-setup', log_level=0).start(barrier=True)
     if args.virtual_pipeline_model_parallel_size is not None:
+        train_data_loader = []
+        valid_data_loader = []
+        test_data_loader = []
+        
         train_data_iterator = []
         valid_data_iterator = []
         test_data_iterator = []
@@ -681,16 +688,33 @@ def pretrain(
                 functools.partial(train_valid_test_dataset_provider, vp_stage=vp_stage)
             if getattr(train_valid_test_dataset_provider, 'is_distributed', False):
                 vp_stage_train_valid_test_dataset_provider.is_distributed = True
-            iterators = build_train_valid_test_data_iterators(
+            dataloaders = build_train_valid_test_data_loaders(
                 vp_stage_train_valid_test_dataset_provider
+            )
+            train_data_loader.append(dataloaders[0])
+            valid_data_loader.append(dataloaders[1])
+            test_data_loader.append(dataloaders[2])
+            
+            iterators = build_train_valid_test_data_iterators_from_data_loaders(
+                *dataloaders
             )
             train_data_iterator.append(iterators[0])
             valid_data_iterator.append(iterators[1])
             test_data_iterator.append(iterators[2])
     else:
-        train_data_iterator, valid_data_iterator, test_data_iterator = (
-            build_train_valid_test_data_iterators(train_valid_test_dataset_provider)
+        train_data_loader, valid_data_loader, test_data_loader = (
+            build_train_valid_test_data_loaders(train_valid_test_dataset_provider)
         )
+        
+        train_data_iterator, valid_data_iterator, test_data_iterator = (
+            build_train_valid_test_data_iterators_from_data_loaders(
+                train_data_loader, valid_data_loader, test_data_loader
+            )   
+        )
+        
+        # train_data_iterator, valid_data_iterator, test_data_iterator = (
+        #     build_train_valid_test_data_iterators(train_valid_test_dataset_provider)
+        # )
     timers('train/valid/test-data-iterators-setup').stop()
     print_datetime('after dataloaders are built')
     app_metrics['app_build_dataiters_finish_time'] = one_logger_utils.get_timestamp_in_ms()
@@ -740,6 +764,7 @@ def pretrain(
                 config,
                 checkpointing_context,
                 non_loss_data_func,
+                train_data_loader,
             )
 
         print_datetime('after training is done')
@@ -755,6 +780,13 @@ def pretrain(
                 train_data_iterator=train_data_iterator,
                 preprocess_common_state_dict_fn=preprocess_common_state_dict,
             )
+            
+            if args.dataloader_type == 'mixtera':
+                from megatron.core import parallel_state
+                dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+                node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+                torch.distributed.barrier()
+                handle_mixtera_checkpoint(train_data_loader, args.save, dp_group_id, node_id, False)
 
         one_logger and one_logger.log_metrics(
             {'app_train_loop_finish_time': one_logger_utils.get_timestamp_in_ms()}
@@ -810,6 +842,8 @@ def pretrain(
 
     ft_integration.shutdown()
     one_logger_utils.finish()
+    
+    destroy_global_state()
 
 
 def update_train_iters(args):
@@ -1220,7 +1254,7 @@ def dummy_train_step(data_iterator):
             batch = get_batch_on_this_cp_rank(batch)
 
 
-def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func):
+def train_step(iteration, forward_step_func, data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func, train_data_loader=None):
     """Single training step."""
     args = get_args()
     timers = get_timers()
@@ -1259,6 +1293,8 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             decoder_seq_length=args.decoder_seq_length,
             forward_only=False,
             adjust_tensor_shapes_fn=adjust_tensor_shapes_fn,
+            train_data_loader=train_data_loader,
+            iteration=iteration,
         )
     should_checkpoint, should_exit, exit_code = rerun_state_machine.should_checkpoint_and_exit()
     if should_exit:
@@ -1425,6 +1461,7 @@ def training_log(
         'optimizer-inner-step',
         'optimizer-copy-main-to-model-params',
         'optimizer',
+        'mixtera-feedback',
     ]
     # Add timers from RL loop if needed.
     if getattr(args, 'perform_rl_step', False):
@@ -1814,6 +1851,7 @@ def checkpoint_and_decide_exit(
     num_floating_point_operations_so_far,
     checkpointing_context,
     train_data_iterator,
+    train_data_loader,
 ):
     """Save checkpoint and decide whether to exit based on arguments (e.g., if
     --exit-duration-in-mins is set). Actual exit happens in main training loop
@@ -1852,6 +1890,15 @@ def checkpoint_and_decide_exit(
             train_data_iterator=train_data_iterator,
         )
         saved_checkpoint = True
+        
+        if args.dataloader_type == 'mixtera':
+            from megatron.core import parallel_state
+            assert isinstance(train_data_loader, torch.utils.data.DataLoader), f"Dataloader for mixtera should be a torch.utils.data.DataLoader not {type(train_data_loader)}"
+            dp_group_id = parallel_state._DATA_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+            node_id = parallel_state._MODEL_PARALLEL_GLOBAL_RANKS.index(torch.distributed.get_rank())
+            torch.distributed.barrier()
+            # print(f"Rank [{torch.distributed.get_rank()}] saves checkpoint at iteration {iteration}", flush=True)
+            handle_mixtera_checkpoint(train_data_loader, args.save, dp_group_id, node_id, False)
 
     elif (
         args.save
@@ -1923,6 +1970,7 @@ def train(
     config,
     checkpointing_context,
     non_loss_data_func,
+    train_data_loader=None,
 ):
     """Training function: run train_step desired number of times, run validation, checkpoint."""
     args = get_args()
@@ -2098,7 +2146,7 @@ def train(
     forward_backward_func = get_forward_backward_func()
     if args.enable_cuda_graph and args.cuda_graph_scope=="full_iteration":
         forward_backward_func = FullCudaGraphWrapper(forward_backward_func, cuda_graph_warmup_steps=args.cuda_graph_warmup_steps)
-
+    
     def get_e2e_base_metrics():
         """Get base metrics values for one-logger to calculate E2E tracking metrics."""
         num_floating_point_operations_since_current_train_start = (
@@ -2172,6 +2220,7 @@ def train(
     # Run training iterations till done.
     buffered_rollouts = None
     while iteration < args.train_iters:
+        # print(f"[Rank {torch.distributed.get_rank()}] Starting iteration {iteration}...")
         if args.profile and torch.distributed.get_rank() in args.profile_ranks:
             if args.use_pytorch_profiler:
                 prof.step()
@@ -2252,9 +2301,10 @@ def train(
             grad_norm,
             num_zeros_in_grad,
         ) = train_step(
-            forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func
+            iteration, forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func, train_data_loader
         )
         ft_integration.on_training_step_end()
+
         if should_checkpoint:
             save_checkpoint_and_time(
                 iteration,
@@ -2396,6 +2446,7 @@ def train(
             num_floating_point_operations_so_far,
             checkpointing_context,
             train_data_iterator,
+            train_data_loader,
         )
         if should_exit:
             break
@@ -2803,10 +2854,9 @@ def build_train_valid_test_data_iterators(build_train_valid_test_datasets_provid
     train_dataloader, valid_dataloaders, test_dataloader = build_train_valid_test_data_loaders(
         build_train_valid_test_datasets_provider
     )
-
     # Build iterators.
     dl_type = args.dataloader_type
-    assert dl_type in ['single', 'cyclic', 'external']
+    assert dl_type in ['single', 'cyclic', 'external', 'mixtera']
 
     def _get_iterator(dataloader_type, dataloader):
         """Return dataset iterator."""
@@ -2814,6 +2864,79 @@ def build_train_valid_test_data_iterators(build_train_valid_test_datasets_provid
             return RerunDataIterator(iter(dataloader))
         elif dataloader_type == "cyclic":
             return RerunDataIterator(iter(cyclic_iter(dataloader)))
+        elif dataloader_type == "mixtera":
+            return RerunDataIterator(iter(dataloader))
+        elif dataloader_type == "external":
+            # External dataloader is passed through. User is expected to define how to iterate.
+            if isinstance(dataloader, list):
+                return [RerunDataIterator(d) for d in dataloader]
+            else:
+                return RerunDataIterator(dataloader)
+        else:
+            raise RuntimeError("unexpected dataloader type")
+
+    if train_dataloader is not None:
+        train_data_iterator = _get_iterator(dl_type, train_dataloader)
+    else:
+        train_data_iterator = None
+
+    if valid_dataloaders is not None:
+        # when using full validation, we need to override eval iters with the correct
+        # number of iterations on tp rank 0 so that it can be distributed to the other 
+        # ranks later
+        if args.full_validation:
+            if args.multiple_validation_sets:
+                if valid_dataloaders[0] is None:
+                    args.eval_iters = [None]*len(valid_dataloaders)
+                else:
+                    args.eval_iters = [len(dl) for dl in valid_dataloaders]
+            else:
+                args.eval_iters = len(valid_dataloaders[0])
+
+        if args.multiple_validation_sets:
+            if valid_dataloaders[0] is None:
+                valid_data_iterators = [None] * len(valid_dataloaders)
+            else:
+                valid_dl_type = "cyclic" if args.full_validation else dl_type
+                print(
+                    f"[VALID DATA LOADER LENGTHS] "
+                    ", ".join(f"{idx}: {len(dl)}" for idx, dl in enumerate(valid_dataloaders))
+                )
+                valid_data_iterators = [
+                    _get_iterator(valid_dl_type, dl) for dl in valid_dataloaders
+                ]
+        elif valid_dataloaders[0] is not None:
+            valid_data_iterators = _get_iterator(dl_type, valid_dataloaders[0])
+        else:
+            valid_data_iterators = None
+    else:
+        valid_data_iterators = None
+
+    if test_dataloader is not None:
+        test_data_iterator = _get_iterator(dl_type, test_dataloader)
+    else:
+        test_data_iterator = None
+
+    return train_data_iterator, valid_data_iterators, test_data_iterator
+
+
+def build_train_valid_test_data_iterators_from_data_loaders(train_dataloader, valid_dataloaders, test_dataloader):
+    """Build pretraining data iterators."""
+
+    args = get_args()
+
+    # Build iterators.
+    dl_type = args.dataloader_type
+    assert dl_type in ['single', 'cyclic', 'external', 'mixtera']
+
+    def _get_iterator(dataloader_type, dataloader):
+        """Return dataset iterator."""
+        if dataloader_type == "single":
+            return RerunDataIterator(iter(dataloader))
+        elif dataloader_type == "cyclic":
+            return RerunDataIterator(iter(cyclic_iter(dataloader)))
+        elif dataloader_type == "mixtera":
+            return RerunDataIterator(iter(dataloader))
         elif dataloader_type == "external":
             # External dataloader is passed through. User is expected to define how to iterate.
             if isinstance(dataloader, list):

@@ -444,7 +444,6 @@ def _get_megatron_optimizer_based_on_param_groups(
                     growth_interval=config.loss_scale_window,
                     hysteresis=config.hysteresis,
                 )
-
         optimizer_args = [optimizer, config, grad_scaler, init_state_fn]
         if config.use_distributed_optimizer:
             optimizer = DistributedOptimizer(
