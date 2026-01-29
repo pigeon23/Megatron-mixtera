@@ -1,16 +1,17 @@
-<div align="center">
+# Megatron with Mixtera
 
-
-Megatron with Mixtera
-
-## To start
+### To start
 ```bash
 ./examples/gpt3/pretrain.sbatch
 ```
 
+### Files
+- `./examples/gpt3/pretrain.sbatch` is the script to start training, including configuration of model and optimization.
+- `./pretrain_gpt.py` includes the setup of Mixtera dataloader and ADO.
 
-------------------------------------------------------
 
+-----------------------------------------------------
+<div align="center">
 
 Megatron-LM & Megatron Core
 ===========================
